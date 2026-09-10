@@ -1,0 +1,18 @@
+# Secrets / local
+.env.local
+.env
+*.env.local
+backend/data/
+frontend/node_modules/
+frontend/dist/
+**/wikiatlas.db
+**/wikiatlas.db-wal
+**/wikiatlas.db-shm
+
+# 本地核对截图 / 私密目录，不入库
+.shots/
+.secrets/
+
+# 构建缓存
+frontend/node_modules/.vite/
+*.tsbuildinfo
