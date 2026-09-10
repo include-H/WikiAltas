@@ -24,7 +24,8 @@ import type { CreateTarget } from './WorkDialogs'
 export default function SideNav() {
   const nav = useNavigate()
   const loc = useLocation()
-  const { nodes, pinnedIds, sidebarCollapsed, setSidebarCollapsed, setAiPanelOpen } = useAppStore()
+  const { nodes, pinnedIds, sidebarCollapsed, setSidebarCollapsed, setAiPanelOpen, me } =
+    useAppStore()
   const [searchOpen, setSearchOpen] = useState(false)
   const [createRoot, setCreateRoot] = useState<CreateTarget | null>(null)
   const [theme, setTheme] = useState(
@@ -67,6 +68,7 @@ export default function SideNav() {
             onClick={() => nav('/')}
           />
         </Tooltip>
+        {me.authed && (
         <Tooltip content="新建宇宙" position="right">
           <Button
             theme="borderless"
@@ -75,6 +77,8 @@ export default function SideNav() {
             onClick={() => setSidebarCollapsed(false)}
           />
         </Tooltip>
+        )}
+        {me.authed && (
         <Tooltip content="馆员" position="right">
           <Button
             theme="borderless"
@@ -83,6 +87,7 @@ export default function SideNav() {
             onClick={() => setAiPanelOpen(true)}
           />
         </Tooltip>
+        )}
         <div className="side-spacer" />
         <Tooltip content={theme === 'dark' ? '浅色模式' : '深色模式'} position="right">
           <Button
@@ -92,6 +97,7 @@ export default function SideNav() {
             onClick={() => setTheme(toggleTheme())}
           />
         </Tooltip>
+        {me.authed && (
         <Tooltip content="设置" position="right">
           <Button
             theme="borderless"
@@ -100,6 +106,7 @@ export default function SideNav() {
             onClick={() => nav('/settings')}
           />
         </Tooltip>
+        )}
         <Tooltip content="展开侧边栏" position="right">
           <Button
             theme="borderless"
@@ -165,6 +172,7 @@ export default function SideNav() {
             {n.title}
           </Button>
         ))}
+        {me.authed && (
         <Button
           className="side-add"
           theme="borderless"
@@ -174,6 +182,7 @@ export default function SideNav() {
         >
           新建或置顶知识库
         </Button>
+        )}
       </div>
 
       <div className="side-section side-section-grow">
@@ -187,8 +196,9 @@ export default function SideNav() {
 
       <div className="side-foot">
         <span className="side-foot-hint">
-          {nodes.length} 节点
-          {pinned.length > 0 ? ` · 置顶 ${pinned.length}` : ''}
+          {me.authed
+            ? `${nodes.length} 节点${pinned.length > 0 ? ` · 置顶 ${pinned.length}` : ''}`
+            : `${nodes.length} 篇公开文档 · 访客模式`}
         </span>
         <Tooltip content="折叠侧边栏" position="top">
           <Button

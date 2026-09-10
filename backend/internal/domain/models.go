@@ -28,6 +28,14 @@ const (
 
 type WorkStatus string
 
+// Visibility 决定访客能否看到该节点（public 且所有祖先都 public 才可见）。
+type Visibility string
+
+const (
+	VisibilityPublic  Visibility = "public"
+	VisibilityPrivate Visibility = "private"
+)
+
 const (
 	WorkStatusStub  WorkStatus = "stub"
 	WorkStatusDraft WorkStatus = "draft"
@@ -108,6 +116,8 @@ type Work struct {
 	ContentMd  *string    `json:"contentMd"`
 	ContentVer int64      `json:"contentVer"`
 	Status     WorkStatus `json:"status"`
+	// Visibility: public | private；访客只有"自身与祖先都 public"的节点可见
+	Visibility Visibility `json:"visibility"`
 	SortOrder  int64      `json:"sortOrder"`
 	CreatedAt  string     `json:"createdAt"`
 	UpdatedAt  string     `json:"updatedAt"`
@@ -122,6 +132,7 @@ type WorkSummary struct {
 	Title          string     `json:"title"`
 	Slug           string     `json:"slug"`
 	Status         WorkStatus `json:"status"`
+	Visibility     Visibility `json:"visibility"`
 	HasContent     bool       `json:"hasContent"`
 	HasLibraryLink bool       `json:"hasLibraryLink"`
 	SortOrder      int64      `json:"sortOrder"`
@@ -252,6 +263,13 @@ type Settings struct {
 	Search struct {
 		ExaAPIKeyConfigured bool `json:"exaApiKeyConfigured"`
 	} `json:"search"`
+	// Admin 简易用户系统（单管理员）。密码只存哈希，接口只回是否已设置。
+	Admin struct {
+		Username           string `json:"username"`
+		PasswordConfigured bool   `json:"passwordConfigured"`
+		// NewNodeVisibility 新节点默认可见性（public|private）
+		NewNodeVisibility Visibility `json:"newNodeVisibility"`
+	} `json:"admin"`
 	SkillRoot string `json:"skillRoot"`
 }
 
@@ -264,6 +282,8 @@ func DefaultSettings() Settings {
 	s.Runs.ExpireDays = 7
 	s.Runs.KeepEventsDays = 90
 	s.Runs.MaxConcurrentRuns = 2
+	s.Admin.Username = "admin"
+	s.Admin.NewNodeVisibility = VisibilityPrivate
 	s.SkillRoot = "/root/WikiAltas/skills/wiki-writing"
 	return s
 }
@@ -275,16 +295,19 @@ type CreateWorkBody struct {
 	Medium   *Medium  `json:"medium"`
 	Title    string   `json:"title"`
 	Slug     *string  `json:"slug"`
+	// Visibility 省略时用设置页的"新节点默认可见性"
+	Visibility *Visibility `json:"visibility"`
 }
 
 // PatchWorkBody is PATCH /api/works/:id.
 type PatchWorkBody struct {
-	Title     *string     `json:"title"`
-	ParentID  *string     `json:"parentId"`
-	Medium    *Medium     `json:"medium"`
-	Status    *WorkStatus `json:"status"`
-	SortOrder *int64      `json:"sortOrder"`
-	Aliases   *[]string   `json:"aliases"`
+	Title      *string     `json:"title"`
+	ParentID   *string     `json:"parentId"`
+	Medium     *Medium     `json:"medium"`
+	Status     *WorkStatus `json:"status"`
+	Visibility *Visibility `json:"visibility"`
+	SortOrder  *int64      `json:"sortOrder"`
+	Aliases    *[]string   `json:"aliases"`
 }
 
 // PutContentBody is PUT content endpoints.

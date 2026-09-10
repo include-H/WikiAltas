@@ -13,7 +13,7 @@ import type { CreateTarget } from '../components/shell/WorkDialogs'
 const { Title, Text } = Typography
 
 export default function Home() {
-  const { nodes, treeLoading, treeError, pinnedIds, setActiveBatchId, setAiPanelOpen } =
+  const { nodes, treeLoading, treeError, pinnedIds, setActiveBatchId, setAiPanelOpen, me } =
     useAppStore()
   const nav = useNavigate()
   const [createRoot, setCreateRoot] = useState<CreateTarget | null>(null)
@@ -123,14 +123,16 @@ export default function Home() {
         <Title heading={4} style={{ margin: 0 }}>
           首页
         </Title>
-        <Button
-          theme="solid"
-          type="primary"
-          icon={<IconPlus />}
-          onClick={() => setCreateRoot({ id: null, title: '', kind: null })}
-        >
-          新建知识库
-        </Button>
+        {me.authed && (
+          <Button
+            theme="solid"
+            type="primary"
+            icon={<IconPlus />}
+            onClick={() => setCreateRoot({ id: null, title: '', kind: null })}
+          >
+            新建知识库
+          </Button>
+        )}
       </div>
 
       {treeLoading && nodes.length === 0 && (
@@ -142,7 +144,7 @@ export default function Home() {
 
       {pinned.length > 0 && section('置顶', pinned, '', true)}
       {section('最近作品', recent, '还没有作品。新建一个宇宙，或直接让右下角馆员建档。')}
-      {stubs.length > 0 && (
+      {me.authed && stubs.length > 0 && (
         <section className="home-section">
           <div className="home-section-head">
             <Title heading={6} className="home-section-title">
@@ -167,6 +169,7 @@ export default function Home() {
         </section>
       )}
 
+      {me.authed && (
       <section className="home-section">
         <Title heading={6} className="home-section-title">
           进行中工单
@@ -190,10 +193,13 @@ export default function Home() {
           />
         )}
       </section>
+      )}
 
       <div className="home-foot">
         <Text type="tertiary" size="small">
-          {nodes.length} 个节点 · {stubs.length} 待建档
+          {me.authed
+            ? `${nodes.length} 个节点 · ${stubs.length} 待建档`
+            : `${nodes.length} 篇公开文档 · 访客模式（登录后可写作与管理）`}
         </Text>
       </div>
 

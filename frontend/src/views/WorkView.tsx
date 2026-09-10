@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
-import { Banner, Button, Empty, Spin, Toast, Typography } from '@douyinfe/semi-ui'
+import { Banner, Button, Empty, Spin, Tag, Toast, Typography } from '@douyinfe/semi-ui'
 import type { Work } from '../types'
 import { getWork, putWorkContent, patchWork } from '../lib/api'
 import { useAppStore } from '../lib/store'
@@ -17,7 +17,7 @@ export default function WorkView() {
   const { id } = useParams()
   const nav = useNavigate()
   const loc = useLocation()
-  const { contentStamp, lastCommitted, staging, setAiPanelOpen, docMode } = useAppStore()
+  const { contentStamp, lastCommitted, staging, setAiPanelOpen, docMode, me } = useAppStore()
   const [work, setWork] = useState<Work | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -148,7 +148,7 @@ export default function WorkView() {
         contentKey={`${work.contentVer}:${outlineMd.length}`}
       />
       <div className="work-content">
-        <PendingRevisions workId={work.id} onReload={load} />
+        {me.authed && <PendingRevisions workId={work.id} onReload={load} />}
         <MarkdownEditor
           key={work.id}
           title={work.title}
@@ -157,18 +157,22 @@ export default function WorkView() {
           contentVer={work.contentVer}
           saving={saving}
           aiWriting={aiWriting}
-          mode={docMode === 'read' ? 'read' : 'edit'}
-          actions={
+          mode={!me.authed || docMode === 'read' ? 'read' : 'edit'}
+          actions={me.authed ? (
             <DocActions
               workId={work.id}
               workTitle={work.title}
               onReload={load}
               onDeleted={() => nav('/')}
             />
-          }
+          ) : (
+            <Tag size="small" color={work.visibility === 'public' ? 'green' : 'grey'}>
+              {work.visibility === 'public' ? '公开' : '私有'}
+            </Tag>
+          )}
           onAiWrite={() => setAiPanelOpen(true)}
           onSave={onSave}
-          onTitleChange={onTitleChange}
+          onTitleChange={me.authed ? onTitleChange : undefined}
           onDraftChange={setOutlineMd}
         />
         <div className="work-foot">

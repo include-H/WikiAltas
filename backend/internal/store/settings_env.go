@@ -105,6 +105,12 @@ func (s *Store) applyEnvSettings() (bool, error) {
 			return false, err
 		}
 	}
+	// 首次导入时允许用 WIKIATLAS_ADMIN_PASSWORD 设定管理员密码（已设过就不覆盖）
+	if pw := envFirst("WIKIATLAS_ADMIN_PASSWORD"); pw != "" && !s.AdminPasswordConfigured() {
+		if err := s.SetAdminPassword(pw); err != nil {
+			return false, err
+		}
+	}
 	if _, err := s.DB.Exec(`INSERT INTO settings (key, value) VALUES ('env_imported', '1')
 		ON CONFLICT(key) DO UPDATE SET value = '1'`); err != nil {
 		return false, err

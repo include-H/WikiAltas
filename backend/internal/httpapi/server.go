@@ -29,7 +29,8 @@ func New(st *store.Store, runs *run.Manager) *Server {
 
 // Handler returns the root handler with CORS.
 func (s *Server) Handler() http.Handler {
-	return cors(s.mux)
+	// 默认拒绝：未登录只能走访客白名单（只读公开内容）
+	return cors(s.withAuth(s.mux))
 }
 
 func cors(next http.Handler) http.Handler {
@@ -49,6 +50,11 @@ func (s *Server) routes() {
 	m := s.mux
 	// health
 	m.HandleFunc("GET /api/health", s.handleHealth)
+
+	// 简易用户系统
+	m.HandleFunc("POST /api/auth/login", s.handleLogin)
+	m.HandleFunc("POST /api/auth/logout", s.handleLogout)
+	m.HandleFunc("GET /api/auth/me", s.handleMe)
 
 	// tree
 	m.HandleFunc("GET /api/tree", s.handleTree)
@@ -153,11 +159,26 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 
 // --- tree ---
 
-func (s *Server) handleTree(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleTree(w http.ResponseWriter, r *http.Request) {
 	nodes, err := s.store.ListTree()
 	if err != nil {
 		writeStoreErr(w, err)
 		return
+	}
+	// 访客只看得到"自身与祖先都是 public"的节点
+	if !s.isAuthed(r) {
+		public, err := s.store.PublicWorkIDs()
+		if err != nil {
+			writeStoreErr(w, err)
+			return
+		}
+		visible := make([]domain.WorkSummary, 0, len(nodes))
+		for _, n := range nodes {
+			if public[n.ID] {
+				visible = append(visible, n)
+			}
+		}
+		nodes = visible
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes})
 }
@@ -180,6 +201,10 @@ func (s *Server) handleCreateWork(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetWork(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if !s.isAuthed(r) && !s.store.IsPublicWork(id) {
+		writeErr(w, http.StatusNotFound, "not_found", "文档不存在或未公开")
+		return
+	}
 	work, err := s.store.GetWork(id)
 	if err != nil {
 		writeStoreErr(w, err)
@@ -243,6 +268,10 @@ func (s *Server) handleDeleteWork(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListDocs(w http.ResponseWriter, r *http.Request) {
 	workID := r.PathValue("id")
+	if !s.isAuthed(r) && !s.store.IsPublicWork(workID) {
+		writeErr(w, http.StatusNotFound, "not_found", "文档不存在或未公开")
+		return
+	}
 	if _, err := s.store.GetWork(workID); err != nil {
 		writeStoreErr(w, err)
 		return
@@ -274,6 +303,10 @@ func (s *Server) handleGetDoc(w http.ResponseWriter, r *http.Request) {
 	doc, err := s.store.GetDoc(r.PathValue("id"))
 	if err != nil {
 		writeStoreErr(w, err)
+		return
+	}
+	if !s.isAuthed(r) && !s.store.IsPublicWork(doc.FolderOf) {
+		writeErr(w, http.StatusNotFound, "not_found", "资料不存在或未公开")
 		return
 	}
 	// 与 GET /api/works/{id} 保持一致：单资源包一层，前端按 { doc } 解
@@ -607,6 +640,26 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writeStoreErr(w, err)
 		return
 	}
+	if !s.isAuthed(r) {
+		public, err := s.store.PublicWorkIDs()
+		if err != nil {
+			writeStoreErr(w, err)
+			return
+		}
+		visible := make([]domain.SearchHit, 0, len(hits))
+		for _, h := range hits {
+			if h.Kind == "work" {
+				if public[h.ID] {
+					visible = append(visible, h)
+				}
+				continue
+			}
+			if doc, err := s.store.GetDoc(h.ID); err == nil && public[doc.FolderOf] {
+				visible = append(visible, h)
+			}
+		}
+		hits = visible
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"hits": hits})
 }
 
@@ -632,6 +685,7 @@ func (s *Server) settingsForResponse(st *domain.Settings) *domain.Settings {
 	out.Library.EmbyAPIKey = nil
 	out.Library.KomgaAPIKey = nil
 	out.Library.GameAtlasAPIKey = nil
+	out.Admin.PasswordConfigured = s.store.AdminPasswordConfigured()
 	return &out
 }
 

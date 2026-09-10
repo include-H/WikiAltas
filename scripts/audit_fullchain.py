@@ -6,10 +6,16 @@
 默认 http://127.0.0.1:8080；压测请指向一个独立实例（无 LLM key 时走 mock 执行器，不花钱）。
 
 覆盖：树/节点 CRUD、正文与版本冲突、资料夹（含关联规则）、检索（含别名）、
-工单生命周期、SSE、批次并发闸门、设置与运行时、以及一批性能采样。
+工单生命周期、SSE、批次并发闸门、设置与运行时、访客只读与节点可见性，
+以及一批性能采样。
+
+会话：脚本自己引导管理员密码（软门槛）并登录；访客用例走匿名 opener。
+已设密码的实例请用 WA_AUDIT_PASSWORD 传入口令。
 """
 
+import http.cookiejar
 import json
+import os
 import statistics
 import sys
 import time
@@ -18,6 +24,13 @@ import urllib.parse
 import urllib.request
 
 BASE = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8080").rstrip("/")
+AUDIT_PASSWORD = os.environ.get("WA_AUDIT_PASSWORD", "audit-pass-123")
+
+# 已登录会话（管理员）
+AUTH_JAR = http.cookiejar.CookieJar()
+AUTH_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(AUTH_JAR))
+# 访客：不带任何 Cookie
+GUEST_OPENER = urllib.request.build_opener()
 
 RESULTS: list[tuple[str, bool, str]] = []
 
@@ -28,13 +41,20 @@ def check(name: str, ok: bool, detail: str = "") -> bool:
     return ok
 
 
-def call(method: str, path: str, body=None, timeout: int = 120, raw: bool = False):
+def call(
+    method: str,
+    path: str,
+    body=None,
+    timeout: int = 120,
+    raw: bool = False,
+    opener=None,
+):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(
         BASE + path, data=data, headers={"Content-Type": "application/json"}, method=method
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with (opener or AUTH_OPENER).open(req, timeout=timeout) as r:
             payload = r.read().decode()
             if raw:
                 return r.status, payload
@@ -47,9 +67,41 @@ def call(method: str, path: str, body=None, timeout: int = 120, raw: bool = Fals
             return e.code, payload
 
 
+def call_guest(method: str, path: str, body=None, timeout: int = 30, raw: bool = False):
+    """匿名请求：模拟未登录访客（不带会话 Cookie）。"""
+    return call(method, path, body, timeout=timeout, raw=raw, opener=GUEST_OPENER)
+
+
 def q(value: str) -> str:
     return urllib.parse.quote(value)
 
+
+# ---------------------------------------------------------------- 0. 会话
+print("\n=== 0. 会话（软门槛 / 访问密码）===")
+code, _ = call_guest("PUT", "/api/settings", {"admin": {"newPassword": AUDIT_PASSWORD}})
+if code == 200:
+    check("首次运行：初始化访问密码", True, "软门槛就位")
+elif code == 401:
+    print(f"  已设密码：改用 WA_AUDIT_PASSWORD 登录（当前口令长度 {len(AUDIT_PASSWORD)}）")
+else:
+    check("初始化访问密码", False, f"HTTP {code}")
+
+code, bad = call_guest("POST", "/api/auth/login", {"password": AUDIT_PASSWORD + "-wrong"})
+check("错误口令被拒（401 + 剩余次数）", code == 401 and "remainingAttempts" in (bad or {}), f"HTTP {code}")
+
+# 登录必须走 AUTH_OPENER，Cookie 才会进 AUTH_JAR
+code, ok = call("POST", "/api/auth/login", {"password": AUDIT_PASSWORD})
+check("访问密码登录（不带用户名）", code == 200 and ok.get("ok") is True, f"HTTP {code}")
+check("登录下发 HttpOnly 会话 Cookie",
+      any(c.name == "wa_session" for c in AUTH_JAR), f"cookies={[c.name for c in AUTH_JAR]}")
+if code != 200:
+    print("  ❌ 无法登录：换空的库，或用 WA_AUDIT_PASSWORD 传正确口令")
+    sys.exit(2)
+
+code, me = call("GET", "/api/auth/me")
+check("会话可用（me=admin）", code == 200 and me.get("authed") and me.get("role") == "admin")
+code, guest_me = call_guest("GET", "/api/auth/me")
+check("匿名 me=guest", code == 200 and guest_me.get("role") == "guest")
 
 # ---------------------------------------------------------------- 1. 树与节点
 print("\n=== 1. 树 / 节点 / 正文版本 ===")
@@ -160,7 +212,7 @@ try:
     stream_url = f"{BASE}/api/runs/{run_id}/events/stream"
     req = urllib.request.Request(stream_url, headers={"Accept": "text/event-stream"})
     sse_count = 0
-    with urllib.request.urlopen(req, timeout=3) as resp:
+    with AUTH_OPENER.open(req, timeout=3) as resp:
         # 历史回放后连接会挂着等心跳，所以读超时是预期行为：收到几条就够判定
         try:
             while True:
@@ -259,6 +311,84 @@ s = time.time()
 code, bigget = call("GET", f"/api/works/{wid}")
 read_ms = (time.time() - s) * 1000
 check("大文档读取", code == 200 and len(bigget["work"]["contentMd"]) > 100000, f"{read_ms:.0f} ms")
+
+# ---------------------------------------------------------------- 8. 访客与可见性
+print("\n=== 8. 访客只读 / 节点可见性（软门槛的真边界）===")
+ts = int(time.time())
+token = f"Zorblax{ts}"  # 用 ASCII 唯一词：中文+数字在 FTS 里会粘成一个 token
+code, pu = call("POST", "/api/works", {"kind": "universe", "title": f"访客审计宇宙{ts}"})
+check("新节点默认 private", code == 201 and pu.get("visibility") == "private", f"visibility={pu.get('visibility')}")
+pu_id = pu["id"]
+code, pw = call("POST", "/api/works", {"kind": "work", "title": f"访客审计单作{ts}", "parentId": pu_id, "medium": "game"})
+pw_id = pw["id"]
+call("PUT", f"/api/works/{pw_id}/content", {"contentMd": f"# 私密样本{ts}\n\n{token} 不该被访客看到。\n", "author": "human"})
+# 公开但挂在私密祖先下：继承判定应当仍然藏起来
+_, pubw = call("POST", "/api/works", {"kind": "work", "title": f"公开审计单作{ts}", "parentId": sid, "medium": "game", "visibility": "public"})
+pubw_id = pubw["id"]
+call("PUT", f"/api/works/{pubw_id}/content", {"contentMd": f"# 公开样本{ts}\n\n{token} 谁都能看。\n", "author": "human"})
+# 全公开链路：宇宙 + 单作都 public
+_, pgu = call("POST", "/api/works", {"kind": "universe", "title": f"公开审计宇宙{ts}", "visibility": "public"})
+pgu_id = pgu["id"]
+_, pgw = call("POST", "/api/works", {"kind": "work", "title": f"公链审计单作{ts}", "parentId": pgu_id, "medium": "game", "visibility": "public"})
+pgw_id = pgw["id"]
+call("PUT", f"/api/works/{pgw_id}/content", {"contentMd": f"# 公链样本{ts}\n\n{token} 公开链路内容。\n", "author": "human"})
+
+code, gtree = call_guest("GET", "/api/tree")
+guest_ids = {n["id"] for n in (gtree or {}).get("nodes", [])}
+check("访客树过滤私密节点", code == 200 and pu_id not in guest_ids and pw_id not in guest_ids)
+check("公开节点挂在私密祖先下 → 访客仍看不到", pubw_id not in guest_ids)
+check("全公开链路 → 访客可见", pgu_id in guest_ids and pgw_id in guest_ids)
+code, atree = call("GET", "/api/tree")
+admin_ids = {n["id"] for n in atree.get("nodes", [])}
+check("管理员树能看到私密节点", pu_id in admin_ids and pw_id in admin_ids)
+
+code, _ = call_guest("GET", f"/api/works/{pw_id}")
+check("访客直取私密单作 → 404", code == 404, f"HTTP {code}")
+code, _ = call_guest("GET", f"/api/works/{pw_id}/docs")
+check("访客列私密单作资料 → 404", code == 404, f"HTTP {code}")
+code, _ = call_guest("GET", f"/api/settings")
+check("访客读设置 → 401", code == 401, f"HTTP {code}")
+code, _ = call_guest("POST", "/api/works", {"kind": "work", "title": "访客偷建的节点"})
+check("访客建节点 → 401", code == 401, f"HTTP {code}")
+code, _ = call_guest("POST", "/api/runs", {"intent": "continue_wiki", "goal": "访客偷跑工单", "workspace": f"work:{wid}"})
+check("访客创建工单 → 401", code == 401, f"HTTP {code}")
+code, _ = call_guest("PUT", f"/api/works/{wid}/content", {"contentMd": "访客篡改", "author": "human"})
+check("访客改正文 → 401", code == 401, f"HTTP {code}")
+
+code, gsearch = call_guest("GET", f"/api/search?q={q(token)}")
+gids = {h["id"] for h in (gsearch or {}).get("hits", [])}
+check("访客检索只回全公开链路的节点",
+      code == 200 and pgw_id in gids and pw_id not in gids and pubw_id not in gids,
+      f"hits={sorted(gids)}")
+_, asearch = call("GET", f"/api/search?q={q(token)}")
+check("管理员检索能看到私密节点", pw_id in {h["id"] for h in asearch.get("hits", [])})
+
+# 只公开祖先：子节点仍私密
+call("PATCH", f"/api/works/{pu_id}", {"visibility": "public"})
+code, gtree2 = call_guest("GET", "/api/tree")
+gids2 = {n["id"] for n in (gtree2 or {}).get("nodes", [])}
+check("祖先公开后访客可见宇宙", pu_id in gids2)
+check("子节点仍私密（继承判定按祖先链）", pw_id not in gids2)
+code, _ = call_guest("GET", f"/api/works/{pw_id}")
+check("访客仍取不到私密子节点 → 404", code == 404, f"HTTP {code}")
+
+# 全部公开：可读
+call("PATCH", f"/api/works/{pw_id}", {"visibility": "public"})
+code, gwork = call_guest("GET", f"/api/works/{pw_id}")
+check("公开后可读正文", code == 200 and f"私密样本{ts}" in (gwork.get("work", {}).get("contentMd") or ""))
+code, _ = call_guest("GET", f"/api/works/{pw_id}/docs")
+check("公开后可列资料", code == 200, f"HTTP {code}")
+code, _ = call_guest("DELETE", f"/api/works/{pw_id}")
+check("访客删节点 → 401", code == 401, f"HTTP {code}")
+
+# 收尾：管理员清理这批节点（先删子，再删宇宙）
+call("DELETE", f"/api/works/{pw_id}")
+call("DELETE", f"/api/works/{pu_id}")
+call("DELETE", f"/api/works/{pubw_id}")
+call("DELETE", f"/api/works/{pgw_id}")
+call("DELETE", f"/api/works/{pgu_id}")
+code, _ = call("GET", f"/api/works/{pu_id}")
+check("清理完成（已删节点 404）", code == 404, f"HTTP {code}")
 
 # ---------------------------------------------------------------- 汇总
 print("\n=== 汇总 ===")

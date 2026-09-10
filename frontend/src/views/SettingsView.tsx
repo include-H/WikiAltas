@@ -5,6 +5,7 @@ import {
   Card,
   Input,
   InputNumber,
+  Select,
   Spin,
   Tag,
   Toast,
@@ -12,6 +13,8 @@ import {
 } from '@douyinfe/semi-ui'
 import type { RuntimeInfo, Settings } from '../types'
 import { getRuntime, getSettings, importEnvSettings, putSettings, testLLM } from '../lib/api'
+import { useAppStore } from '../lib/store'
+import { useNavigate } from 'react-router-dom'
 
 const { Title, Text } = Typography
 
@@ -31,6 +34,8 @@ interface FormState {
   expireDays: number
   keepEventsDays: number
   maxConcurrentRuns: number
+  adminUsername: string
+  newNodeVisibility: 'public' | 'private'
   skillRoot: string
 }
 
@@ -50,6 +55,8 @@ const EMPTY_FORM: FormState = {
   expireDays: 7,
   keepEventsDays: 90,
   maxConcurrentRuns: 2,
+  adminUsername: 'admin',
+  newNodeVisibility: 'private',
   skillRoot: '',
 }
 
@@ -66,6 +73,8 @@ function toForm(st: Settings): FormState {
     expireDays: st.runs.expireDays,
     keepEventsDays: st.runs.keepEventsDays,
     maxConcurrentRuns: st.runs.maxConcurrentRuns,
+    adminUsername: st.admin?.username ?? 'admin',
+    newNodeVisibility: st.admin?.newNodeVisibility ?? 'private',
     skillRoot: st.skillRoot ?? '',
   }
 }
@@ -78,6 +87,9 @@ export default function SettingsView() {
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<string | null>(null)
+  const { me } = useAppStore()
+  const nav = useNavigate()
+  const [adminPassword, setAdminPassword] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -94,8 +106,8 @@ export default function SettingsView() {
   }, [])
 
   useEffect(() => {
-    void load()
-  }, [load])
+    if (me.authed) void load()
+  }, [load, me.authed])
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }))
@@ -125,10 +137,16 @@ export default function SettingsView() {
           keepEventsDays: form.keepEventsDays,
           maxConcurrentRuns: form.maxConcurrentRuns,
         },
+        admin: {
+          username: form.adminUsername,
+          newPassword: adminPassword || undefined,
+          newNodeVisibility: form.newNodeVisibility,
+        },
         skillRoot: form.skillRoot,
       })
       setSettings(next)
       setForm({ ...toForm(next), apiKey: '', exaApiKey: '', embyApiKey: '', komgaApiKey: '', gameatlasApiKey: '' })
+      setAdminPassword('')
       Toast.success('已保存（下一个工单即生效，无需重启）')
       setRuntime(await getRuntime().catch(() => null))
     } catch (e) {
@@ -180,6 +198,21 @@ export default function SettingsView() {
 
   if (loading && !settings) {
     return <Spin style={{ display: 'block', margin: '64px auto' }} />
+  }
+
+  // 访客不进入设置页（接口本身也会 401，这里给一个明确的入口）
+  if (!me.authed) {
+    return (
+      <div className="settings-view">
+        <Banner
+          type="info"
+          description="设置需要登录后才能查看与修改。"
+        />
+        <Button style={{ marginTop: 12 }} theme="solid" type="primary" onClick={() => nav('/login')}>
+          去登录
+        </Button>
+      </div>
+    )
   }
 
   return (
@@ -286,6 +319,45 @@ export default function SettingsView() {
             当前生效：<code>{runtime?.skillRoot || '未解析到'}</code>
             <br />
             create_wiki 加载 SKILL.md → core.md → 一个 media-*.md；运行时默认不注入 examples/。
+          </Text>
+        </Card>
+
+        <Card title="访问与隐私" className="settings-card">
+          <Text type="tertiary" size="small">
+            未登录只能阅读「公开」文档；公开要求自身与所有祖先都是公开，资料继承所属节点的可见性。
+            访问密码只是**防止误公开**的软门槛（比如以后的 Gal 条目），不是安全边界。
+          </Text>
+          <div className="settings-field-inline" style={{ marginTop: 10 }}>
+            <div className="settings-field">
+              <span className="settings-label">管理员标识（仅显示用）</span>
+              <Input value={form.adminUsername} onChange={(v) => set('adminUsername', v)} />
+            </div>
+            <div className="settings-field">
+              <span className="settings-label">
+                访问密码 {keyTag(settings?.admin.passwordConfigured)}
+              </span>
+              <Input
+                mode="password"
+                value={adminPassword}
+                onChange={setAdminPassword}
+                placeholder={settings?.admin.passwordConfigured ? '已设置，留空不修改' : '设置一个密码以启用登录'}
+              />
+            </div>
+            <div className="settings-field">
+              <span className="settings-label">新节点默认可见性</span>
+              <Select<string>
+                value={form.newNodeVisibility}
+                onChange={(v) => set('newNodeVisibility', String(v) as 'public' | 'private')}
+                optionList={[
+                  { value: 'private', label: '私有（推荐）' },
+                  { value: 'public', label: '公开' },
+                ]}
+                style={{ width: '100%' }}
+              />
+            </div>
+          </div>
+          <Text type="tertiary" size="small">
+            单作 / 系列 / 宇宙都可以单独设为公开或私有；把父节点设为私有时，其下所有内容对访客一并隐藏。
           </Text>
         </Card>
 

@@ -18,7 +18,7 @@ func scanWork(row interface{ Scan(...any) error }) (*domain.Work, error) {
 		contentMd sql.NullString
 	)
 	err := row.Scan(&w.ID, &parentID, &w.Kind, &medium, &w.Title, &w.Slug,
-		&aliases, &contentMd, &w.ContentVer, &w.Status, &w.SortOrder,
+		&aliases, &contentMd, &w.ContentVer, &w.Status, &w.Visibility, &w.SortOrder,
 		&w.CreatedAt, &w.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -40,7 +40,7 @@ func scanWork(row interface{ Scan(...any) error }) (*domain.Work, error) {
 	return &w, nil
 }
 
-const workCols = `id, parent_id, kind, medium, title, slug, aliases_json, content_md, content_ver, status, sort_order, created_at, updated_at`
+const workCols = `id, parent_id, kind, medium, title, slug, aliases_json, content_md, content_ver, status, visibility, sort_order, created_at, updated_at`
 
 // CreateWork inserts a new work node.
 func (s *Store) CreateWork(body domain.CreateWorkBody) (*domain.Work, error) {
@@ -89,9 +89,15 @@ func (s *Store) CreateWork(body domain.CreateWorkBody) (*domain.Work, error) {
 	if body.Medium != nil {
 		medium = string(*body.Medium)
 	}
-	_, err := s.DB.Exec(`INSERT INTO works (id, parent_id, kind, medium, title, slug, aliases_json, content_md, content_ver, status, sort_order, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, '[]', NULL, 0, 'stub', 0, ?, ?)`,
-		id, parent, string(body.Kind), medium, body.Title, slug, now, now)
+	visibility := domain.VisibilityPrivate
+	if body.Visibility != nil && (*body.Visibility == domain.VisibilityPublic || *body.Visibility == domain.VisibilityPrivate) {
+		visibility = *body.Visibility
+	} else if v := s.NewNodeVisibility(); v != "" {
+		visibility = v
+	}
+	_, err := s.DB.Exec(`INSERT INTO works (id, parent_id, kind, medium, title, slug, aliases_json, content_md, content_ver, status, visibility, sort_order, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, '[]', NULL, 0, 'stub', ?, 0, ?, ?)`,
+		id, parent, string(body.Kind), medium, body.Title, slug, string(visibility), now, now)
 	if err != nil {
 		return nil, err
 	}
@@ -179,6 +185,14 @@ func (s *Store) PatchWork(id string, body domain.PatchWorkBody) (*domain.Work, e
 			return nil, err
 		}
 	}
+	if body.Visibility != nil {
+		if *body.Visibility != domain.VisibilityPublic && *body.Visibility != domain.VisibilityPrivate {
+			return nil, ErrValidation{Message: "visibility must be public|private"}
+		}
+		if _, err := s.DB.Exec(`UPDATE works SET visibility = ?, updated_at = ? WHERE id = ?`, string(*body.Visibility), now, id); err != nil {
+			return nil, err
+		}
+	}
 	if body.SortOrder != nil {
 		if _, err := s.DB.Exec(`UPDATE works SET sort_order = ?, updated_at = ? WHERE id = ?`, *body.SortOrder, now, id); err != nil {
 			return nil, err
@@ -234,7 +248,7 @@ func (s *Store) DeleteWork(id string) error {
 // ListTree returns flat work summaries ordered for tree display.
 func (s *Store) ListTree() ([]domain.WorkSummary, error) {
 	rows, err := s.DB.Query(`
-		SELECT w.id, w.parent_id, w.kind, w.medium, w.title, w.slug, w.status, w.sort_order, w.updated_at,
+		SELECT w.id, w.parent_id, w.kind, w.medium, w.title, w.slug, w.status, w.visibility, w.sort_order, w.updated_at,
 		       CASE WHEN w.content_md IS NOT NULL AND w.content_md != '' THEN 1 ELSE 0 END AS has_content,
 		       CASE WHEN EXISTS (SELECT 1 FROM library_links l WHERE l.work_id = w.id) THEN 1 ELSE 0 END AS has_link
 		FROM works w
@@ -251,7 +265,7 @@ func (s *Store) ListTree() ([]domain.WorkSummary, error) {
 			medium     sql.NullString
 			hasC, hasL int
 		)
-		if err := rows.Scan(&n.ID, &parentID, &n.Kind, &medium, &n.Title, &n.Slug, &n.Status, &n.SortOrder, &n.UpdatedAt, &hasC, &hasL); err != nil {
+		if err := rows.Scan(&n.ID, &parentID, &n.Kind, &medium, &n.Title, &n.Slug, &n.Status, &n.Visibility, &n.SortOrder, &n.UpdatedAt, &hasC, &hasL); err != nil {
 			return nil, err
 		}
 		if parentID.Valid {

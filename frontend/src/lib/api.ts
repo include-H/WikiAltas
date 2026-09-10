@@ -6,6 +6,7 @@ import type {
   Doc,
   LibraryLink,
   LibrarySourceInfo,
+  Me,
   PatchWorkBody,
   PutContentBody,
   PutContentResult,
@@ -259,6 +260,24 @@ export function importEnvSettings(): Promise<{ imported: boolean; settings: Sett
 
 export function getRuntime(): Promise<RuntimeInfo> {
   return request('/api/runtime')
+}
+
+// --- 简易用户系统 ---
+
+export function getMe(): Promise<Me> {
+  return request('/api/auth/me')
+}
+
+/** 访问密码登录（用户名可省略，默认管理员）。 */
+export function login(password: string, username?: string): Promise<{ ok: boolean; username: string }> {
+  return request('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(username ? { username, password } : { password }),
+  })
+}
+
+export function logout(): Promise<{ ok: boolean }> {
+  return request('/api/auth/logout', { method: 'POST' })
 }
 
 // --- SSE（实现见 lib/sse.ts，这里保持统一入口）---

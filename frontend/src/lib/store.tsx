@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { Run, WorkSummary } from '../types'
-import { getTree, listRuns } from '../lib/api'
+import type { Me, Run, WorkSummary } from '../types'
+import { getMe, getTree, listRuns } from '../lib/api'
 import { readPins, writePins } from '../lib/pins'
 
 export type DocMode = 'edit' | 'revision' | 'read'
@@ -11,6 +11,11 @@ interface AppStore {
   treeLoading: boolean
   treeError: string | null
   refreshTree: () => Promise<void>
+  /** 简易用户系统：访客=false，只能读公开文档 */
+  me: Me
+  /** /api/auth/me 是否已经回来过（用于避免"还没设密码"横幅一闪） */
+  meLoaded: boolean
+  refreshMe: () => Promise<void>
   aiPanelOpen: boolean
   setAiPanelOpen: (open: boolean) => void
   activeRuns: Run[]
@@ -43,6 +48,12 @@ const Ctx = createContext<AppStore | null>(null)
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [nodes, setNodes] = useState<WorkSummary[]>([])
+  const [me, setMe] = useState<Me>({
+    authed: false,
+    username: '',
+    adminPasswordConfigured: false,
+  })
+  const [meLoaded, setMeLoaded] = useState(false)
   const [treeLoading, setTreeLoading] = useState(true)
   const [treeError, setTreeError] = useState<string | null>(null)
   const [aiPanelOpen, setAiPanelOpen] = useState(false)
@@ -101,6 +112,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const refreshMe = useCallback(async () => {
+    try {
+      setMe(await getMe())
+    } catch {
+      setMe({ authed: false, username: '', adminPasswordConfigured: false })
+    } finally {
+      setMeLoaded(true)
+    }
+  }, [])
+
   const notifyContentCommitted = useCallback((targetId: string, version: number) => {
     setLastCommitted({ targetId, version })
     setContentStamp((n) => n + 1)
@@ -108,9 +129,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [refreshTree])
 
   useEffect(() => {
+    void refreshMe()
     void refreshTree()
-    void refreshRuns()
-  }, [refreshTree, refreshRuns])
+  }, [refreshMe, refreshTree])
+
+  // 工单是管理态专属：访客不请求 /api/runs（否则每轮轮询都吃 401）
+  useEffect(() => {
+    if (me.authed) void refreshRuns()
+    else setActiveRuns([])
+  }, [me.authed, refreshRuns])
 
   const value = useMemo<AppStore>(
     () => ({
@@ -118,6 +145,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       treeLoading,
       treeError,
       refreshTree,
+      me,
+      meLoaded,
+      refreshMe,
       aiPanelOpen,
       setAiPanelOpen,
       activeRuns,
@@ -141,6 +171,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       treeLoading,
       treeError,
       refreshTree,
+      me,
+      meLoaded,
+      refreshMe,
       aiPanelOpen,
       activeRuns,
       refreshRuns,

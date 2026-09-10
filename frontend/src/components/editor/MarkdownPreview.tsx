@@ -1,7 +1,7 @@
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { useMemo } from 'react'
-import { injectHeadingIds, transformEpigraph } from '../../lib/mdOutline'
+import { transformEpigraph } from '../../lib/mdOutline'
 
 marked.setOptions({ gfm: true, breaks: true })
 
@@ -13,11 +13,11 @@ interface Props {
 export default function MarkdownPreview({ markdown, className }: Props) {
   const html = useMemo(() => {
     if (!markdown?.trim()) return ''
-    let src = transformEpigraph(markdown)
-    src = injectHeadingIds(src)
-    // strip {#id} markers after marked if they leak — marked may not honor them
+    // 注意：不要用 injectHeadingIds 往标题里塞 `{#id}` —— marked 不认这个语法，
+    // 会把标记当正文渲染出来（访客/阅读态会看到 "1. 章节 {#1-章节1}"）。
+    // 这里统一在渲染后按顺序补 id，与 parseOutline 的 slug 规则保持一致。
+    const src = transformEpigraph(markdown)
     let rendered = marked.parse(src, { async: false }) as string
-    // fallback: inject ids into h2/h3 by order
     rendered = ensureHeadingIds(rendered, markdown)
     return DOMPurify.sanitize(rendered, {
       ADD_ATTR: ['target', 'id', 'class'],

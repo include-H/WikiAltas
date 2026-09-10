@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"wikiatlas/backend/internal/domain"
 	"wikiatlas/backend/internal/llm"
 )
 
@@ -37,6 +38,12 @@ type settingsPayload struct {
 		KeepEventsDays    int `json:"keepEventsDays"`
 		MaxConcurrentRuns int `json:"maxConcurrentRuns"`
 	} `json:"runs"`
+	Admin struct {
+		Username          string `json:"username"`
+		NewPassword       string `json:"newPassword"`
+		ClearPassword     bool   `json:"clearPassword"`
+		NewNodeVisibility string `json:"newNodeVisibility"`
+	} `json:"admin"`
 	SkillRoot string `json:"skillRoot"`
 }
 
@@ -48,6 +55,11 @@ func nonEmpty(s *string) *string {
 }
 
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
+	// 还没设密码时允许一次"初始化提交"（设置管理员密码）；设好后必须登录。
+	if !s.isAuthed(r) && s.store.AdminPasswordConfigured() {
+		writeErr(w, http.StatusUnauthorized, "unauthorized", "需要登录后才能修改设置")
+		return
+	}
 	var p settingsPayload
 	if err := decodeBody(r, &p); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_json", err.Error())
@@ -98,6 +110,13 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if p.SkillRoot != "" {
 		st.SkillRoot = p.SkillRoot
 	}
+	if p.Admin.Username != "" {
+		st.Admin.Username = p.Admin.Username
+	}
+	if p.Admin.NewNodeVisibility == string(domain.VisibilityPublic) ||
+		p.Admin.NewNodeVisibility == string(domain.VisibilityPrivate) {
+		st.Admin.NewNodeVisibility = domain.Visibility(p.Admin.NewNodeVisibility)
+	}
 
 	if p.LLM.ClearAPIKey {
 		_ = s.store.SetAPIKey("")
@@ -108,6 +127,14 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.SetSecret("exa_api_key", "")
 	} else if p.Search.ExaAPIKey != "" {
 		_ = s.store.SetSecret("exa_api_key", p.Search.ExaAPIKey)
+	}
+	if p.Admin.ClearPassword {
+		_ = s.store.SetAdminPassword("")
+	} else if p.Admin.NewPassword != "" {
+		if err := s.store.SetAdminPassword(p.Admin.NewPassword); err != nil {
+			writeStoreErr(w, err)
+			return
+		}
 	}
 
 	if err := s.store.SaveSettings(st); err != nil {

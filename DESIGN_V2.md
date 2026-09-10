@@ -62,6 +62,7 @@ CREATE TABLE works (
   content_md    TEXT,                      -- 正文：9 章 Wiki / 系列主文；universe 可空
   content_ver   INTEGER NOT NULL DEFAULT 0,
   status        TEXT NOT NULL DEFAULT 'stub',  -- stub | draft | ready
+  visibility    TEXT NOT NULL DEFAULT 'private', -- public | private（简易用户系统）
   sort_order    INTEGER NOT NULL DEFAULT 0,
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL
@@ -170,6 +171,14 @@ same_series       同系列（仅展示用，可由树推导则不存）
 禁止自由文本谓词。新增关系走代码改词典，不是运行时发明。
 
 ### 3.5 库同步边界
+
+### 3.6 访问与隐私（2026-09-10 追加）
+
+- **简易用户系统（软门槛）**：**只有访问密码、没有账号体系**——密码哈希（PBKDF2）存 `settings` 表，登录后写 HttpOnly 会话 Cookie（HMAC 签名，密钥自动生成）；连续失败 5 次锁定 5 分钟。
+  - 定位说明：这道密码用于**防止不该公开展示的内容（如以后的 Gal 条目）被顺路看到**，**不是安全边界**；真正的公开/私有边界由节点 `visibility` 承担。不要把敏感数据交给它保护。
+- **访客（未登录）**：只能**只读浏览公开文档**——`GET tree / works / docs / search`，且只返回公开内容；其余接口一律 401。
+- **节点可见性**：`works.visibility = public | private`，**资料继承所属节点**；节点对访客可见的条件是「自身与所有祖先都是 public」。
+- 默认 `private`（发布显式发生）；设置页可配「新节点默认可见性」。
 
 - `library_links` 只存外链与 ID，**不把 Emby description 当正文**。  
 - 同步工具：从 Emby/Komga/GameAtlas 拉列表 → 比对 → 建 `stub` 节点 + 挂链。  

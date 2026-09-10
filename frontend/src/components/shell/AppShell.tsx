@@ -12,6 +12,7 @@ import { UNKNOWN_WORK_ID } from '../../lib/routes'
 export default function AppShell() {
   const { aiPanelOpen, setAiPanelOpen, nodes, sidebarCollapsed, activeRuns, setActiveBatchId } =
     useAppStore()
+  const { me } = useAppStore()
   const params = useParams()
   const loc = useLocation()
 
@@ -49,11 +50,11 @@ export default function AppShell() {
         <div className="shell-body">
           <Outlet />
         </div>
-        {aiPanelOpen ? (
+        {me.authed && aiPanelOpen ? (
           <div className="ai-float">
             <AiPanel workId={workId} workTitle={workTitle} docId={docId} />
           </div>
-        ) : (
+        ) : me.authed ? (
           <FloatButton
             className="ai-float-btn"
             shape="round"
@@ -62,7 +63,7 @@ export default function AppShell() {
             badge={activeRuns.length > 0 ? { count: activeRuns.length } : undefined}
             onClick={() => setAiPanelOpen(true)}
           />
-        )}
+        ) : null}
       </Layout.Content>
     </Layout>
   )

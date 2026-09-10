@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { Button, Dropdown, Empty, Modal, Spin, Tag, Toast, Tree } from '@douyinfe/semi-ui'
-import { IconFile, IconFolder, IconMore, IconStar } from '@douyinfe/semi-icons'
+import { IconFile, IconFolder, IconLock, IconMore, IconStar } from '@douyinfe/semi-icons'
 import type { ReactNode } from 'react'
 import type { WorkSummary } from '../../types'
-import { deleteWork } from '../../lib/api'
+import { deleteWork, patchWork } from '../../lib/api'
 import { useAppStore } from '../../lib/store'
 import { folderPath, workPath, UNKNOWN_WORK_ID } from '../../lib/routes'
 import { STATUS_META, attachFolderRows, folderKey, folderKeyWorkId, isFolderKey } from '../../lib/tree'
@@ -21,6 +21,7 @@ export default function WorkTree() {
     pinnedIds,
     togglePin,
     setAiPanelOpen,
+    me,
   } = useAppStore()
   const nav = useNavigate()
   const params = useParams()
@@ -63,6 +64,17 @@ export default function WorkTree() {
     })
   }
 
+  /** 切换节点可见性（public 才能被访客看到，且要求祖先也公开）。 */
+  const setVisibility = async (id: string, makePublic: boolean) => {
+    try {
+      await patchWork(id, { visibility: makePublic ? 'public' : 'private' })
+      Toast.success(makePublic ? '已设为公开' : '已设为私有')
+      void refreshTree()
+    } catch (e) {
+      Toast.error(e instanceof Error ? e.message : '修改失败')
+    }
+  }
+
   const renderLabel = (_label: ReactNode, treeNode?: TreeNodeData | { key?: string }) => {
     const key = String((treeNode as TreeNodeData | undefined)?.key ?? '')
     if (isFolderKey(key)) {
@@ -77,14 +89,20 @@ export default function WorkTree() {
     if (!w) return _label
     const status = STATUS_META[w.status]
     const pinned = pinnedIds.includes(w.id)
+    const isPublic = w.visibility === 'public'
     return (
       <span className="tree-node" title={w.title}>
-        <IconFile size="small" className="tree-node-icon" />
+        {isPublic ? (
+          <IconFile size="small" className="tree-node-icon" />
+        ) : (
+          <IconLock size="small" className="tree-node-icon" />
+        )}
         <span className="tree-node-title">{w.title}</span>
         {pinned && <IconStar size="small" className="tree-node-pin" />}
         <Tag color={status.color} size="small" className="tree-node-status">
           {status.text}
         </Tag>
+        {me.authed && (
         <span className="tree-node-actions">
           <Dropdown
             trigger="click"
@@ -112,6 +130,11 @@ export default function WorkTree() {
                 <Dropdown.Item onClick={() => togglePin(w.id)}>
                   {pinned ? '取消置顶' : '置顶'}
                 </Dropdown.Item>
+                <Dropdown.Item
+                  onClick={() => void setVisibility(w.id, w.visibility !== 'public')}
+                >
+                  {isPublic ? '设为私有' : '设为公开'}
+                </Dropdown.Item>
                 <Dropdown.Divider />
                 <Dropdown.Item type="danger" onClick={() => removeNode(w)}>
                   删除
@@ -130,6 +153,7 @@ export default function WorkTree() {
             />
           </Dropdown>
         </span>
+        )}
       </span>
     )
   }

@@ -21,7 +21,15 @@ export default function TopBar() {
   const nav = useNavigate()
   const loc = useLocation()
   const params = useParams()
-  const { nodes, setAiPanelOpen, docMode, setDocMode } = useAppStore()
+  const { nodes, setAiPanelOpen, docMode, setDocMode, me, refreshMe } = useAppStore()
+  const nav2 = useNavigate()
+
+  const doLogout = async () => {
+    const { logout } = await import('../../lib/api')
+    await logout().catch(() => undefined)
+    await refreshMe()
+    nav2('/')
+  }
 
   const routeId = params.id
   const workId = routeId && routeId !== UNKNOWN_WORK_ID ? routeId : null
@@ -75,7 +83,7 @@ export default function TopBar() {
 
       <div className="top-bar-actions">
         {/* 对齐飞书：模式下拉（编辑 / 修订 / 只读）+ AI 入口（问豆包位）+ 更多 + 头像 */}
-        {onDoc && (
+        {me.authed && onDoc && (
           <Dropdown
             trigger="click"
             position="bottomRight"
@@ -97,6 +105,7 @@ export default function TopBar() {
             </Button>
           </Dropdown>
         )}
+        {me.authed && (
         <Tooltip content="问馆员" position="bottom">
           <Button
             className="ai-topbar-btn"
@@ -109,6 +118,8 @@ export default function TopBar() {
             问馆员
           </Button>
         </Tooltip>
+        )}
+        {me.authed ? (
         <Dropdown
           trigger="click"
           position="bottomRight"
@@ -147,9 +158,33 @@ export default function TopBar() {
             aria-label="更多"
           />
         </Dropdown>
-        <Avatar size="extra-small" color="light-blue">
-          我
-        </Avatar>
+        ) : (
+          <Button
+            theme="solid"
+            type="primary"
+            size="small"
+            onClick={() => nav('/login')}
+          >
+            登录
+          </Button>
+        )}
+        {me.authed && (
+          <Dropdown
+            trigger="click"
+            position="bottomRight"
+            render={
+              <Dropdown.Menu>
+                <Dropdown.Item disabled>{me.username}</Dropdown.Item>
+                <Dropdown.Divider />
+                <Dropdown.Item onClick={() => void doLogout()}>退出登录</Dropdown.Item>
+              </Dropdown.Menu>
+            }
+          >
+            <Avatar size="extra-small" color="light-blue">
+              {(me.username || '我').slice(0, 1).toUpperCase()}
+            </Avatar>
+          </Dropdown>
+        )}
       </div>
     </header>
   )

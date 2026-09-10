@@ -15,7 +15,7 @@ const { Text } = Typography
 export default function DocView() {
   const { id: workIdParam, docId } = useParams()
   const nav = useNavigate()
-  const { contentStamp, lastCommitted, setAiPanelOpen, nodes, docMode } = useAppStore()
+  const { contentStamp, lastCommitted, setAiPanelOpen, nodes, docMode, me } = useAppStore()
   const [work, setWork] = useState<Work | null>(null)
   const [doc, setDoc] = useState<Doc | null>(null)
   const [loading, setLoading] = useState(true)
@@ -132,9 +132,9 @@ export default function DocView() {
           contentMd={doc.contentMd}
           contentVer={doc.contentVer}
           saving={saving}
-          mode={docMode === 'read' ? 'read' : 'edit'}
-          onAiWrite={() => setAiPanelOpen(true)}
-          actions={
+          mode={!me.authed || docMode === 'read' ? 'read' : 'edit'}
+          onAiWrite={me.authed ? () => setAiPanelOpen(true) : undefined}
+          actions={me.authed ? (
             <Button
               theme="borderless"
               type="tertiary"
@@ -144,7 +144,7 @@ export default function DocView() {
             >
               所属资料夹
             </Button>
-          }
+          ) : undefined}
           onSave={onSave}
           onTitleChange={undefined}
           onDraftChange={setOutlineMd}

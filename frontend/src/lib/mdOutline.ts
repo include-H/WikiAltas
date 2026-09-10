@@ -79,7 +79,11 @@ export function slugifyHeading(text: string, index: number): string {
   return base || `h-${index}`
 }
 
-/** Rewrite markdown so ##/### get id attributes for anchor scroll. */
+/**
+ * 已废弃：marked 不支持 `{#id}` 语法，会把标记当正文渲染出来。
+ * 现在由 MarkdownPreview.ensureHeadingIds 在渲染后按顺序补 id（与 parseOutline 的 slug 一致）。
+ * 保留此函数仅供离线工具使用。
+ */
 export function injectHeadingIds(markdown: string): string {
   const lines = markdown.split(/\r?\n/)
   const seen = new Set<string>()

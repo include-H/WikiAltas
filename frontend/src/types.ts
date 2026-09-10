@@ -6,6 +6,7 @@ export type UUID = string
 export type WorkKind = 'universe' | 'series' | 'work'
 export type Medium = 'game' | 'movie' | 'tv' | 'anime' | 'manga' | 'novel' | 'book' | 'other'
 export type WorkStatus = 'stub' | 'draft' | 'ready'
+export type Visibility = 'public' | 'private'
 export type Author = 'human' | 'llm' | 'import'
 export type RelationType =
   | 'adaptation_of'
@@ -39,6 +40,7 @@ export interface Work {
   contentMd: string | null
   contentVer: number
   status: WorkStatus
+  visibility: Visibility
   sortOrder: number
   createdAt: string
   updatedAt: string
@@ -52,6 +54,7 @@ export interface WorkSummary {
   title: string
   slug: string
   status: WorkStatus
+  visibility: Visibility
   hasContent: boolean
   hasLibraryLink: boolean
   sortOrder: number
@@ -165,6 +168,7 @@ export interface CreateWorkBody {
   medium?: Medium
   title: string
   slug?: string
+  visibility?: Visibility
 }
 
 export interface PatchWorkBody {
@@ -172,7 +176,15 @@ export interface PatchWorkBody {
   parentId?: UUID | null
   medium?: Medium
   status?: WorkStatus
+  visibility?: Visibility
   sortOrder?: number
+}
+
+/** 简易用户系统：当前会话状态（访客=authed:false）。 */
+export interface Me {
+  authed: boolean
+  username: string
+  adminPasswordConfigured: boolean
 }
 
 export interface PutContentBody {
@@ -232,6 +244,11 @@ export interface Settings {
   search: {
     exaApiKeyConfigured: boolean
   }
+  admin: {
+    username: string
+    passwordConfigured: boolean
+    newNodeVisibility: Visibility
+  }
   skillRoot: string
 }
 
@@ -261,6 +278,12 @@ export interface SettingsPayload {
     expireDays: number
     keepEventsDays: number
     maxConcurrentRuns: number
+  }
+  admin?: {
+    username?: string
+    newPassword?: string
+    clearPassword?: boolean
+    newNodeVisibility?: Visibility
   }
   skillRoot: string
 }

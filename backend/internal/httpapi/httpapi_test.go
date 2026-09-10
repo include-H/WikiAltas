@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -16,6 +17,11 @@ import (
 	"wikiatlas/backend/internal/store"
 )
 
+// 测试用的登录态客户端：newTestServer 会登录一次，doJSON 自动带上会话 Cookie。
+var testClients = map[string]*http.Client{}
+
+const testAdminPassword = "test-password-123"
+
 func newTestServer(t *testing.T) (*httptest.Server, *store.Store) {
 	t.Helper()
 	st, err := store.OpenMemory()
@@ -26,12 +32,124 @@ func newTestServer(t *testing.T) (*httptest.Server, *store.Store) {
 	// do not Start() expiry loop in tests
 	srv := httpapi.New(st, mgr)
 	ts := httptest.NewServer(srv.Handler())
+	// 简易用户系统：设置管理员密码并登录，得到带 Cookie 的客户端
+	if err := st.SetAdminPassword(testAdminPassword); err != nil {
+		t.Fatalf("set admin password: %v", err)
+	}
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
+	loginBody, _ := json.Marshal(map[string]string{"username": "admin", "password": testAdminPassword})
+	loginReq, _ := http.NewRequest("POST", ts.URL+"/api/auth/login", bytes.NewReader(loginBody))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginResp, err := client.Do(loginReq)
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	loginResp.Body.Close()
+	if loginResp.StatusCode != http.StatusOK {
+		t.Fatalf("login status = %d, want 200", loginResp.StatusCode)
+	}
+	testClients[ts.URL] = client
 	t.Cleanup(func() {
 		ts.Close()
 		mgr.Stop()
 		st.Close()
+		delete(testClients, ts.URL)
 	})
 	return ts, st
+}
+
+// clientFor 返回该测试服务器对应的登录态客户端（doJSON 之外的裸请求也要带 Cookie）。
+// 简易用户系统：访客只能读公开内容，其余接口一律 401。
+func TestGuestCanOnlyReadPublicContent(t *testing.T) {
+	ts, _ := newTestServer(t) // 内部已登录，用于准备数据
+	guest := &http.Client{}   // 不带 Cookie = 访客
+
+	// 公开节点：宇宙 + 系列 + 单作全部 public
+	pubUniverse := doJSON(t, "POST", ts.URL+"/api/works", map[string]any{"kind": "universe", "title": "公开宇宙", "visibility": "public"}, 201)
+	pubSeries := doJSON(t, "POST", ts.URL+"/api/works", map[string]any{"kind": "series", "title": "公开系列", "parentId": pubUniverse["id"], "visibility": "public"}, 201)
+	pubWork := doJSON(t, "POST", ts.URL+"/api/works", map[string]any{"kind": "work", "title": "公开单作", "parentId": pubSeries["id"], "visibility": "public"}, 201)
+	doJSON(t, "PUT", ts.URL+"/api/works/"+pubWork["id"].(string)+"/content", map[string]any{"contentMd": "# 公开条目\n\n正文", "author": "human"}, 200)
+
+	// 私有节点（默认 private）
+	privSeries := doJSON(t, "POST", ts.URL+"/api/works", map[string]any{"kind": "series", "title": "私有系列", "parentId": pubUniverse["id"]}, 201)
+	privWork := doJSON(t, "POST", ts.URL+"/api/works", map[string]any{"kind": "work", "title": "私有单作", "parentId": privSeries["id"]}, 201)
+	doJSON(t, "PUT", ts.URL+"/api/works/"+privWork["id"].(string)+"/content", map[string]any{"contentMd": "# 私有条目\n\n正文", "author": "human"}, 200)
+	doJSON(t, "POST", ts.URL+"/api/works/"+privSeries["id"].(string)+"/docs", map[string]any{"title": "私有资料"}, 201)
+
+	get := func(url string) int {
+		req, _ := http.NewRequest("GET", url, nil)
+		resp, err := guest.Do(req)
+		if err != nil {
+			t.Fatalf("guest GET %s: %v", url, err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+	post := func(url string, body map[string]any) int {
+		b, _ := json.Marshal(body)
+		req, _ := http.NewRequest("POST", url, bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := guest.Do(req)
+		if err != nil {
+			t.Fatalf("guest POST %s: %v", url, err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if code := get(ts.URL + "/api/works/" + pubWork["id"].(string)); code != 200 {
+		t.Fatalf("访客读公开作品 = %d, want 200", code)
+	}
+	if code := get(ts.URL + "/api/works/" + privWork["id"].(string)); code != 404 {
+		t.Fatalf("访客读私有作品 = %d, want 404", code)
+	}
+	if code := get(ts.URL + "/api/works/" + privSeries["id"].(string) + "/docs"); code != 404 {
+		t.Fatalf("访客读私有资料夹 = %d, want 404", code)
+	}
+	if code := post(ts.URL+"/api/works", map[string]any{"kind": "work", "title": "访客不该能建"}); code != 401 {
+		t.Fatalf("访客建节点 = %d, want 401", code)
+	}
+	if code := post(ts.URL+"/api/runs", map[string]any{"intent": "answer", "goal": "x"}); code != 401 {
+		t.Fatalf("访客建工单 = %d, want 401", code)
+	}
+	if code := get(ts.URL + "/api/settings"); code != 401 {
+		t.Fatalf("访客读设置 = %d, want 401", code)
+	}
+
+	// 访客的树里只有公开节点
+	req, _ := http.NewRequest("GET", ts.URL+"/api/tree", nil)
+	resp, err := guest.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var tree struct {
+		Nodes []map[string]any `json:"nodes"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&tree)
+	for _, n := range tree.Nodes {
+		if vis, _ := n["visibility"].(string); vis != "public" {
+			t.Fatalf("访客树里出现了非公开节点: %v", n["title"])
+		}
+	}
+	if len(tree.Nodes) == 0 {
+		t.Fatal("访客树里应至少包含公开节点")
+	}
+
+	// 错误密码不能登录
+	if code := post(ts.URL+"/api/auth/login", map[string]any{"username": "admin", "password": "wrong"}); code != 401 {
+		t.Fatalf("错误密码登录 = %d, want 401", code)
+	}
+}
+
+func clientFor(rawURL string) *http.Client {
+	for base, c := range testClients {
+		if strings.HasPrefix(rawURL, base) {
+			return c
+		}
+	}
+	return http.DefaultClient
 }
 
 func doJSON(t *testing.T, method, url string, body any, wantStatus int) map[string]any {
@@ -47,7 +165,14 @@ func doJSON(t *testing.T, method, url string, body any, wantStatus int) map[stri
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	client := http.DefaultClient
+	for base, c := range testClients {
+		if strings.HasPrefix(url, base) {
+			client = c
+			break
+		}
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, url, err)
 	}
@@ -123,7 +248,7 @@ func TestWorkCRUD(t *testing.T) {
 
 	// 404 after delete
 	req, _ := http.NewRequest("GET", ts.URL+"/api/works/"+id, nil)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := clientFor(req.URL.String()).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +290,7 @@ func TestContentPut200And409(t *testing.T) {
 	b, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequest("PUT", ts.URL+"/api/works/"+id+"/content", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := clientFor(req.URL.String()).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +353,7 @@ func TestTreeWithChildren(t *testing.T) {
 
 	// cannot delete parent with children
 	req, _ := http.NewRequest("DELETE", ts.URL+"/api/works/"+uid, nil)
-	resp, _ := http.DefaultClient.Do(req)
+	resp, _ := clientFor(req.URL.String()).Do(req)
 	resp.Body.Close()
 	if resp.StatusCode != 400 {
 		t.Fatalf("delete parent status = %d, want 400", resp.StatusCode)
@@ -281,7 +406,7 @@ func TestDocsAndRelationsAPI(t *testing.T) {
 	reqB, _ := json.Marshal(map[string]any{"fromId": aid, "toId": bid, "type": "buddy"})
 	req, _ := http.NewRequest("POST", ts.URL+"/api/relations", bytes.NewReader(reqB))
 	req.Header.Set("Content-Type", "application/json")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, _ := clientFor(req.URL.String()).Do(req)
 	resp.Body.Close()
 	if resp.StatusCode != 400 {
 		t.Fatalf("bad relation status = %d, want 400", resp.StatusCode)
@@ -397,7 +522,7 @@ func TestRunCreateAndEvents(t *testing.T) {
 
 	// SSE stream: read a few events
 	sseReq, _ := http.NewRequest("GET", ts.URL+"/api/runs/"+runID+"/events/stream", nil)
-	sseResp, err := http.DefaultClient.Do(sseReq)
+	sseResp, err := clientFor(sseReq.URL.String()).Do(sseReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,7 +549,7 @@ func TestCreateRunValidation(t *testing.T) {
 	reqB, _ := json.Marshal(map[string]any{"intent": "answer"}) // missing goal
 	req, _ := http.NewRequest("POST", ts.URL+"/api/runs", bytes.NewReader(reqB))
 	req.Header.Set("Content-Type", "application/json")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, _ := clientFor(req.URL.String()).Do(req)
 	resp.Body.Close()
 	if resp.StatusCode != 400 {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
