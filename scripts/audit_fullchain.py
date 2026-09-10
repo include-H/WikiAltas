@@ -9,7 +9,7 @@
 工单生命周期、SSE、批次并发闸门、设置与运行时、访客只读与节点可见性，
 以及一批性能采样。
 
-会话：脚本自己引导管理员密码（软门槛）并登录；访客用例走匿名 opener。
+会话：脚本自己引导管理员密码并登录（新库出厂密码 1234）；访客用例走匿名 opener。
 已设密码的实例请用 WA_AUDIT_PASSWORD 传入口令。
 """
 
@@ -24,7 +24,11 @@ import urllib.parse
 import urllib.request
 
 BASE = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8080").rstrip("/")
-AUDIT_PASSWORD = os.environ.get("WA_AUDIT_PASSWORD", "audit-pass-123")
+# 出厂密码 1234；本地这台机器我压测时改成了 audit-pass-123，两个都试。
+PASSWORD_CANDIDATES = [
+    p for p in (os.environ.get("WA_AUDIT_PASSWORD"), "1234", "audit-pass-123") if p
+]
+AUDIT_PASSWORD = PASSWORD_CANDIDATES[0]
 
 # 已登录会话（管理员）
 AUTH_JAR = http.cookiejar.CookieJar()
@@ -77,12 +81,12 @@ def q(value: str) -> str:
 
 
 # ---------------------------------------------------------------- 0. 会话
-print("\n=== 0. 会话（软门槛 / 访问密码）===")
+print("\n=== 0. 会话（访问密码 / 硬门槛）===")
 code, _ = call_guest("PUT", "/api/settings", {"admin": {"newPassword": AUDIT_PASSWORD}})
 if code == 200:
-    check("首次运行：初始化访问密码", True, "软门槛就位")
+    check("首次运行：初始化访问密码", True, "库里原本没有密码")
 elif code == 401:
-    print(f"  已设密码：改用 WA_AUDIT_PASSWORD 登录（当前口令长度 {len(AUDIT_PASSWORD)}）")
+    print("   库里已有密码（新库出厂密码 = 1234），按候选口令登录")
 else:
     check("初始化访问密码", False, f"HTTP {code}")
 
@@ -90,8 +94,14 @@ code, bad = call_guest("POST", "/api/auth/login", {"password": AUDIT_PASSWORD + 
 check("错误口令被拒（401 + 剩余次数）", code == 401 and "remainingAttempts" in (bad or {}), f"HTTP {code}")
 
 # 登录必须走 AUTH_OPENER，Cookie 才会进 AUTH_JAR
-code, ok = call("POST", "/api/auth/login", {"password": AUDIT_PASSWORD})
-check("访问密码登录（不带用户名）", code == 200 and ok.get("ok") is True, f"HTTP {code}")
+code, ok = 0, None
+for candidate in PASSWORD_CANDIDATES:
+    code, ok = call("POST", "/api/auth/login", {"password": candidate})
+    if code == 200:
+        AUDIT_PASSWORD = candidate
+        break
+check("访问密码登录（不带用户名）", code == 200 and ok.get("ok") is True,
+      f"HTTP {code} · 口令 {AUDIT_PASSWORD}")
 check("登录下发 HttpOnly 会话 Cookie",
       any(c.name == "wa_session" for c in AUTH_JAR), f"cookies={[c.name for c in AUTH_JAR]}")
 if code != 200:
@@ -313,7 +323,7 @@ read_ms = (time.time() - s) * 1000
 check("大文档读取", code == 200 and len(bigget["work"]["contentMd"]) > 100000, f"{read_ms:.0f} ms")
 
 # ---------------------------------------------------------------- 8. 访客与可见性
-print("\n=== 8. 访客只读 / 节点可见性（软门槛的真边界）===")
+print("\n=== 8. 访客只读 / 节点可见性（硬门槛：未登录看不到私有）===")
 ts = int(time.time())
 token = f"Zorblax{ts}"  # 用 ASCII 唯一词：中文+数字在 FTS 里会粘成一个 token
 code, pu = call("POST", "/api/works", {"kind": "universe", "title": f"访客审计宇宙{ts}"})

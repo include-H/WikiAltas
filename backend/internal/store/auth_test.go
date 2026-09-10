@@ -13,8 +13,11 @@ func TestAdminPasswordRoundTrip(t *testing.T) {
 	}
 	defer s.Close()
 
-	if s.AdminPasswordConfigured() {
-		t.Fatal("初始状态不应有密码")
+	if !s.AdminPasswordConfigured() || !s.UsingDefaultPassword() {
+		t.Fatal("新库应带出厂密码 1234")
+	}
+	if !s.CheckAdminPassword("admin", DefaultAdminPassword) {
+		t.Fatal("出厂密码应可登录")
 	}
 	if err := s.SetAdminPassword("s3cret-pw"); err != nil {
 		t.Fatal(err)

@@ -327,6 +327,14 @@ export default function SettingsView() {
             访问密码是管理态的唯一入口：**未登录只能读公开文档，私有内容一律看不到**
             （公开要求自身与所有祖先都是公开，资料继承所属节点）。
           </Text>
+          {settings?.admin.usingDefaultPassword && (
+            <Banner
+              type="warning"
+              closeIcon={null}
+              style={{ marginTop: 10 }}
+              description="当前仍是出厂密码 1234，建议现在就改掉：改完所有旧会话会立即失效。"
+            />
+          )}
           <div className="settings-field-inline" style={{ marginTop: 10 }}>
             <div className="settings-field">
               <span className="settings-label">管理员标识（仅显示用）</span>

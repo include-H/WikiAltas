@@ -105,8 +105,9 @@ func (s *Store) applyEnvSettings() (bool, error) {
 			return false, err
 		}
 	}
-	// 首次导入时允许用 WIKIATLAS_ADMIN_PASSWORD 设定管理员密码（已设过就不覆盖）
-	if pw := envFirst("WIKIATLAS_ADMIN_PASSWORD"); pw != "" && !s.AdminPasswordConfigured() {
+	// 允许用 WIKIATLAS_ADMIN_PASSWORD 设定管理员密码：只在"还没设过"或"仍是出厂密码"时生效
+	if pw := envFirst("WIKIATLAS_ADMIN_PASSWORD"); pw != "" &&
+		(!s.AdminPasswordConfigured() || s.UsingDefaultPassword()) {
 		if err := s.SetAdminPassword(pw); err != nil {
 			return false, err
 		}

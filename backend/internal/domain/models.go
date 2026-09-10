@@ -267,6 +267,8 @@ type Settings struct {
 	Admin struct {
 		Username           string `json:"username"`
 		PasswordConfigured bool   `json:"passwordConfigured"`
+		// UsingDefaultPassword 仍是出厂密码 1234（设置页提醒改掉）
+		UsingDefaultPassword bool `json:"usingDefaultPassword"`
 		// NewNodeVisibility 新节点默认可见性（public|private）
 		NewNodeVisibility Visibility `json:"newNodeVisibility"`
 	} `json:"admin"`

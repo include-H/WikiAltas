@@ -21,6 +21,10 @@ const (
 	secretSessionKey    = "session_secret"
 	pbkdf2Iterations    = 120_000
 	pbkdf2KeyLen        = 32
+
+	// DefaultAdminPassword 出厂访问密码：建完库就能进管理态，登录后请到设置页改掉。
+	// 没有它就会出现"没密码 → 登录按钮按不了 → 也进不去设置页设密码"的死锁。
+	DefaultAdminPassword = "1234"
 )
 
 // AdminUsername 返回管理员用户名（默认 admin）。
@@ -34,6 +38,19 @@ func (s *Store) AdminUsername() string {
 // AdminPasswordConfigured 是否已设置密码（未设置时所有人都是访客）。
 func (s *Store) AdminPasswordConfigured() bool {
 	return s.GetSecret(secretAdminPassword) != ""
+}
+
+// ensureDefaultAdminPassword 给还没有密码的库写入出厂密码。
+func (s *Store) ensureDefaultAdminPassword() error {
+	if s.AdminPasswordConfigured() {
+		return nil
+	}
+	return s.SetAdminPassword(DefaultAdminPassword)
+}
+
+// UsingDefaultPassword 当前是否还是出厂密码（设置页据此提醒修改）。
+func (s *Store) UsingDefaultPassword() bool {
+	return s.CheckAdminPassword(s.AdminUsername(), DefaultAdminPassword)
 }
 
 // SetAdminPassword 设置/修改管理员密码（空字符串=清除）。

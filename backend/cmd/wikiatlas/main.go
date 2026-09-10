@@ -41,6 +41,9 @@ func main() {
 	} else if imported {
 		log.Printf("settings imported from env (后续请在设置页修改)")
 	}
+	if st.UsingDefaultPassword() {
+		log.Printf("访问密码仍是出厂密码 1234 —— 请在设置页「访问与隐私」里改掉")
+	}
 
 	if *seed {
 		if err := seedIfEmpty(st); err != nil {

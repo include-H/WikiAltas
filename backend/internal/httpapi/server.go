@@ -686,6 +686,7 @@ func (s *Server) settingsForResponse(st *domain.Settings) *domain.Settings {
 	out.Library.KomgaAPIKey = nil
 	out.Library.GameAtlasAPIKey = nil
 	out.Admin.PasswordConfigured = s.store.AdminPasswordConfigured()
+	out.Admin.UsingDefaultPassword = s.store.UsingDefaultPassword()
 	return &out
 }
 

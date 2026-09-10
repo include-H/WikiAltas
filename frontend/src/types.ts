@@ -247,6 +247,7 @@ export interface Settings {
   admin: {
     username: string
     passwordConfigured: boolean
+    usingDefaultPassword: boolean
     newNodeVisibility: Visibility
   }
   skillRoot: string

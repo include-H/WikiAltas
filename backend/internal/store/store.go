@@ -197,6 +197,10 @@ CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, seq);
 	if err := s.migrateVisibility(); err != nil {
 		return fmt.Errorf("migrate visibility: %w", err)
 	}
+	// 出厂访问密码：保证"有库就能进管理态"，否则第一次没人能登录（DESIGN_V2 §3.6）
+	if err := s.ensureDefaultAdminPassword(); err != nil {
+		return fmt.Errorf("default admin password: %w", err)
+	}
 
 	// FTS5 virtual tables. trigram tokenizer supports CJK without external segmenters.
 	// External-content pattern keeps a single source of truth in works/docs.
