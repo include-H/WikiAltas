@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { AIChatDialogue, AIChatInput, Button, Tag, Toast, Typography } from '@douyinfe/semi-ui'
+import {
+  AIChatDialogue,
+  AIChatInput,
+  Button,
+  Popover,
+  Tag,
+  Toast,
+  Tooltip,
+  Typography,
+} from '@douyinfe/semi-ui'
 import { IconAIFilledLevel1, IconClose, IconRefresh } from '@douyinfe/semi-icons'
 import type { Run, RunEvent, RunIntent } from '../../types'
 import {
@@ -15,7 +24,7 @@ import {
 import { useAppStore } from '../../lib/store'
 import { workPath } from '../../lib/routes'
 import BatchCard from '../run/BatchCard'
-import { buildDialogueMessage, dedupeEvents } from '../../lib/runProjection'
+import { buildDialogueMessages, dedupeEvents } from '../../lib/runProjection'
 import type { DialogueStep } from '../../lib/runProjection'
 
 const { Text, Title } = Typography
@@ -31,6 +40,12 @@ interface Props {
 interface SendContent {
   text?: string
   content?: unknown
+}
+
+interface Mention {
+  type: 'work' | 'doc'
+  id: string
+  title: string
 }
 
 /** AIChatInput 的富文本内容 → 纯文本工单目标。 */
@@ -51,9 +66,9 @@ const SKILLS = [
 ]
 
 const MODE_HINT: Record<string, { label: string; tip: string }> = {
-  read: { label: '只读', tip: '只读不改：给分析、评估、答疑' },
-  edit: { label: '编辑', tip: '直接改正文，改完即生效（可回滚）' },
-  revision: { label: '修订', tip: '只做定点小改，每条带理由，逐条可回滚' },
+  read: { label: '只读', tip: '只分析，不动正文' },
+  edit: { label: '编辑', tip: '直接改正文' },
+  revision: { label: '修订', tip: '改动逐条待确认' },
 }
 
 export default function AiPanel({ workId, workTitle, docId }: Props) {
@@ -80,6 +95,42 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
   const lastSeq = useRef(0)
   // 用户在正文里的选区存在 store 里：点进面板会丢掉 DOM 选区，正文工具栏也要用同一份
   const selection = docSelection
+  // @ 引用的上下文（对齐飞书「@ 添加资料」）：作品/资料列表 + 已选中的引用
+  const [mentions, setMentions] = useState<Mention[]>([])
+  const [mentionOpen, setMentionOpen] = useState(false)
+  const composerRef = useRef<InstanceType<typeof AIChatInput> | null>(null)
+
+  const mentionCandidates = useMemo<Mention[]>(() => {
+    const list: Mention[] = []
+    if (workId && workTitle) list.push({ type: 'work', id: workId, title: workTitle })
+    for (const n of nodes) {
+      if (n.id === workId) continue
+      list.push({ type: 'work', id: n.id, title: n.title })
+      if (list.length >= 8) break
+    }
+    return list
+  }, [nodes, workId, workTitle])
+
+  /** 选中一条引用：挂上芯片，并把输入框里那个 @ 删掉（飞书是 @ 变成芯片）。 */
+  const addMention = (m: Mention) => {
+    setMentions((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]))
+    setMentionOpen(false)
+    const editor = composerRef.current?.getEditor?.() as
+      | { state: { selection: { from: number } }; chain: () => any }
+      | undefined
+    try {
+      const from = editor?.state?.selection?.from
+      if (editor && typeof from === 'number' && from > 0) {
+        editor
+          .chain()
+          .focus()
+          .deleteRange({ from: from - 1, to: from })
+          .run()
+      }
+    } catch {
+      // 删不掉也无妨：发送时会把结尾的 @ 去掉
+    }
+  }
 
   // 会话键：同一篇文档/首页共用一段对话，刷新或切文章后按它召回
   const workspace = useMemo(
@@ -179,7 +230,8 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
   }, [workspace, subscribe])
 
   const send = async (text: string) => {
-    const goal = text.trim()
+    // 输入框里结尾的 "@" 只是唤起引用列表用的，别带进工单目标
+    const goal = text.trim().replace(/@$/, '').trim()
     if (!goal) return
     // 意图由上下文推导，界面上没有"功能按钮菜单"（VISUAL_SPEC §4）
     const intent: RunIntent = docId ? 'write_doc' : workId ? 'continue_wiki' : 'create_wiki'
@@ -190,6 +242,10 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
       if (docId) context.docId = docId
       // 修订模式的作用域：用户在正文里选中的那段（对齐飞书「选定内容」）
       if (selection) context.selection = selection
+      // @ 引用的条目：让 Altas 知道"这条消息说的是哪几篇"
+      if (mentions.length) {
+        context.mentioned = mentions.map((m) => `${m.title}(${m.type}:${m.id})`).join('、')
+      }
       // 把用户当前所处的模式发给 Altas：只读=只分析、编辑=直接改、修订=定点改+给理由
       const res = await createRun({
         intent,
@@ -209,6 +265,7 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
       if (detail?.run) setRun(detail.run)
       subscribe(runId)
       void refreshRuns()
+      setMentions([])
     } catch (e) {
       Toast.error(e instanceof Error ? e.message : '创建工单失败')
     } finally {
@@ -264,7 +321,7 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
   // 事件流 → Semi 消息（阶段折叠交给 AIChatDialogue.Step，不再手搓）
   const chats = useMemo(() => {
     if (!run) return []
-    return [buildDialogueMessage(events, run)]
+    return buildDialogueMessages(events, run)
   }, [events, run])
 
   const dialogueRenderers = useMemo(
@@ -292,9 +349,11 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
             </Text>
           )}
         </div>
-        <Tag size="small" color={docMode === 'read' ? 'grey' : docMode === 'revision' ? 'orange' : 'blue'}>
-          {MODE_HINT[docMode]?.label ?? docMode}
-        </Tag>
+        <Tooltip content={MODE_HINT[docMode]?.tip}>
+          <Tag size="small" color={docMode === 'read' ? 'grey' : docMode === 'revision' ? 'orange' : 'blue'}>
+            {MODE_HINT[docMode]?.label ?? docMode}
+          </Tag>
+        </Tooltip>
         <Button
           theme="borderless"
           type="tertiary"
@@ -313,14 +372,6 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
               <IconAIFilledLevel1 />
             </div>
             <div className="ai-empty-title">今天有什么工作需要处理？</div>
-            <Text type="tertiary" size="small">
-              {MODE_HINT[docMode]?.tip}
-            </Text>
-            <Text type="tertiary" size="small">
-              {workTitle
-                ? '说「重写第 4 章」「补一节玩法」，或切换顶栏模式。'
-                : '说「写《X》的 Wiki」，Altas 自己建档、检索、按 9 章写。'}
-            </Text>
           </div>
         ) : restoring ? (
           <div className="ai-empty">
@@ -351,6 +402,31 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
         )}
       </div>
 
+      <Popover
+        visible={mentionOpen}
+        trigger="custom"
+        position="topLeft"
+        onClickOutSide={() => setMentionOpen(false)}
+        content={
+          <div className="ai-mention-list">
+            {mentionCandidates.length === 0 ? (
+              <div className="ai-mention-empty">暂无可引用的条目</div>
+            ) : (
+              mentionCandidates.map((m) => (
+                <button
+                  key={`${m.type}:${m.id}`}
+                  type="button"
+                  className="ai-mention-item"
+                  onClick={() => addMention(m)}
+                >
+                  <span className="ai-mention-title">{m.title}</span>
+                  <span className="ai-mention-kind">{m.type === 'work' ? '作品' : '资料'}</span>
+                </button>
+              ))
+            )}
+          </div>
+        }
+      >
       <div className="ai-panel-input">
         {selection && (
           <div className="ai-selection-chip">
@@ -371,6 +447,7 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
           </div>
         )}
         <AIChatInput
+          ref={composerRef}
           keepSkillAfterSend={false}
           showUploadButton={false}
           showTemplateButton={false}
@@ -378,10 +455,26 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
           placeholder="发消息或创建任务... 使用技能 @ 添加资料"
           canSend={!busy}
           generating={running}
+          references={mentions.map((m) => ({ type: m.type, id: m.id, name: m.title }))}
+          renderReference={(ref) => (
+            <span className="ai-mention-chip">
+              <IconClose
+                size="small"
+                onClick={() => setMentions((prev) => prev.filter((m) => m.id !== ref.id))}
+              />
+              {String(ref.name ?? ref.id)}
+            </span>
+          )}
+          onContentChange={(contents) => {
+            const text = extractText(contents as SendContent[])
+            if (text.endsWith('@')) setMentionOpen(true)
+            else if (mentionOpen) setMentionOpen(false)
+          }}
           onMessageSend={(msg) => void send(extractText(msg.inputContents as SendContent[]))}
           onStopGenerate={() => void stop()}
         />
       </div>
+      </Popover>
     </div>
   )
 }

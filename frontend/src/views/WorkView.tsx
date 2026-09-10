@@ -10,6 +10,7 @@ import MarkdownEditor from '../components/editor/MarkdownEditor'
 import DocActions from '../components/editor/DocActions'
 import PendingRevisions from '../components/editor/PendingRevisions'
 import { parseOutline } from '../lib/mdOutline'
+import { useLiveRefresh } from '../lib/useLiveRefresh'
 
 const { Text } = Typography
 
@@ -27,11 +28,13 @@ export default function WorkView() {
   const routeIdRef = useRef<string | undefined>(id)
   routeIdRef.current = id
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!id) return
     const requested = id
-    setLoading(true)
-    setError(null)
+    if (!opts?.silent) {
+      setLoading(true)
+      setError(null)
+    }
     try {
       // Resolve solely by UUID — slug in the URL is cosmetic and ignored
       const res = await getWork(requested)
@@ -41,10 +44,11 @@ export default function WorkView() {
       setOutlineMd(res.work.contentMd ?? '')
     } catch (e) {
       if (routeIdRef.current !== requested) return
+      if (opts?.silent) return
       setError(e instanceof Error ? e.message : '加载作品失败')
       setWork(null)
     } finally {
-      if (routeIdRef.current === requested) setLoading(false)
+      if (!opts?.silent && routeIdRef.current === requested) setLoading(false)
     }
   }, [id])
 
@@ -83,6 +87,9 @@ export default function WorkView() {
     () => !!work && staging?.targetId === work.id,
     [staging, work],
   )
+
+  // Altas 正在写：每 2 秒静默拉一次正文，用户能看着它一行行长出来
+  useLiveRefresh(aiWriting, useCallback(() => load({ silent: true }), [load]))
 
   const onSave = useCallback(
     async (body: Parameters<typeof putWorkContent>[1]) => {

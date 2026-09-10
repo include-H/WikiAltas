@@ -1377,6 +1377,59 @@ body {
 }
 
 /* 选区工具栏：AI 动作一排在最左（对齐飞书「问问豆包 / 解释」的位置） */
+.ai-mention-list {
+  display: flex;
+  flex-direction: column;
+  min-width: 220px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 4px;
+}
+
+.ai-mention-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--semi-border-radius-small);
+  background: transparent;
+  color: var(--semi-color-text-0);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-mention-item:hover {
+  background: var(--semi-color-fill-0);
+}
+
+.ai-mention-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-mention-kind,
+.ai-mention-empty {
+  color: var(--semi-color-text-2);
+  font-size: 12px;
+}
+
+.ai-mention-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 4px 4px 0;
+  padding: 2px 8px;
+  border-radius: var(--semi-border-radius-circle);
+  background: var(--semi-color-fill-0);
+  color: var(--semi-color-text-1);
+  font-size: 12px;
+}
+
 .tb-btn.active {
   color: var(--semi-color-primary);
   background: var(--semi-color-primary-light-default);

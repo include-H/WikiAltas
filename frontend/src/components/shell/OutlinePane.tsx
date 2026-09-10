@@ -23,8 +23,15 @@ export default function OutlinePane({
     const el = document.getElementById(id)
     const scroller = document.getElementById(scrollTargetId)
     if (!el || !scroller) return
-    const top = el.offsetTop - scroller.offsetTop - 16
-    scroller.scrollTo({ top, behavior: 'smooth' })
+    // 用 rect 差值而不是 offsetTop：编辑态里标题的 offsetParent 是
+    // .block-editor-inner（position: relative），与滚动容器不同源，
+    // offsetTop 相减会算偏；rect 差值对两种态都成立。
+    const top =
+      scroller.scrollTop +
+      el.getBoundingClientRect().top -
+      scroller.getBoundingClientRect().top -
+      16
+    scroller.scrollTo({ top: Math.max(0, top), behavior: 'smooth' })
     setActiveId(id)
   }
 
@@ -77,9 +84,9 @@ export default function OutlinePane({
         {title || '大纲'}
       </div>
       <nav className="outline-list">
-        {headings.map((h) => (
+        {headings.map((h, index) => (
           <button
-            key={h.id}
+            key={`${h.id}#${index}`}
             type="button"
             className={`outline-item level-${h.level}${activeId === h.id ? ' active' : ''}`}
             onClick={() => onClick(h.id)}

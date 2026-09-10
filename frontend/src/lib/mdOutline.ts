@@ -10,6 +10,7 @@ export function parseOutline(markdown: string): OutlineHeading[] {
   let fenceMarker = ''
   let chapter = 0
   let section = 0
+  const usedIds = new Map<string, number>()
 
   for (const raw of lines) {
     const line = raw.trimEnd()
@@ -61,7 +62,7 @@ export function parseOutline(markdown: string): OutlineHeading[] {
 
     headings.push({
       // id 必须与正文渲染时注入的锚点一致，所以用带编号的原始标题
-      id: slugifyHeading(rawTitle, headings.length),
+      id: uniqueSlug(slugifyHeading(rawTitle, headings.length), usedIds),
       level,
       number,
       text,
@@ -77,6 +78,16 @@ export function slugifyHeading(text: string, index: number): string {
     .trim()
     .replace(/\s+/g, '-')
   return base || `h-${index}`
+}
+
+/**
+ * 同名标题去重：第二次出现的 "6.1 核心人物" 变成 `61-核心人物-2`。
+ * 大纲、阅读态渲染、编辑器三处必须用同一套规则，否则点击大纲会滚到错的标题。
+ */
+export function uniqueSlug(base: string, used: Map<string, number>): string {
+  const count = used.get(base) ?? 0
+  used.set(base, count + 1)
+  return count === 0 ? base : `${base}-${count + 1}`
 }
 
 /**

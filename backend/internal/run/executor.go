@@ -569,6 +569,11 @@ func buildInitialMessages(intent domain.RunIntent, goal string, ctxMap map[strin
 		user.WriteString("\n## 用户在正文里选中的内容（修订模式优先只改这一段）\n")
 		user.WriteString(strings.TrimSpace(sel) + "\n")
 	}
+	if mentioned, ok := ctxMap["mentioned"].(string); ok && mentioned != "" {
+		user.WriteString("\n## 用户在本条消息里 @ 的条目\n")
+		user.WriteString(mentioned + "\n")
+		user.WriteString("需要这些内容时用 read_work / read_doc 读取后再动手，不要凭记忆写。\n")
+	}
 	if brief != "" {
 		user.WriteString(brief)
 	}

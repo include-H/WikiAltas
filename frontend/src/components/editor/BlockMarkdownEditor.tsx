@@ -12,7 +12,7 @@ import { BlockNoteView } from '@blocknote/mantine'
 import '@blocknote/core/fonts/inter.css'
 import '@blocknote/mantine/style.css'
 import { blocksToStoredMd, mdToBlockNoteMd, placeholderToEpigraphBlocks } from '../../lib/blockMd'
-import { slugifyHeading } from '../../lib/mdOutline'
+import { slugifyHeading, uniqueSlug } from '../../lib/mdOutline'
 import FeishuToolbar from './FeishuToolbar'
 import { epigraphBlockSpec } from './EpigraphBlock'
 
@@ -44,17 +44,27 @@ const dictionary = {
   placeholders: { ...zh.placeholders, default: '' },
 }
 
-/** Inject slug ids into BlockNote headings so OutlinePane can scroll. */
+/**
+ * Inject slug ids into BlockNote headings so OutlinePane can scroll.
+ *
+ * BlockNote 把 `data-content-type` 挂在 `.bn-block-content` 上（`.bn-block` 只有
+ * `data-node-type`），标题元素本身就是 `.bn-inline-content`（h2/h3）。
+ * 只处理 h2/h3：与 parseOutline 的层级一致，否则正文里混进的 h1/h4+
+ * 会让同名标题的去重序号错位，点大纲滚到错地方。
+ */
 function syncHeadingIds(root: HTMLElement | null): void {
   if (!root) return
   const heads = root.querySelectorAll<HTMLElement>(
-    '.bn-block[data-content-type="heading"] .bn-inline-content',
+    '.bn-block-content[data-content-type="heading"] .bn-inline-content',
   )
   let i = 0
+  const used = new Map<string, number>()
   for (const el of heads) {
+    const tag = el.tagName
+    if (tag !== 'H2' && tag !== 'H3') continue
     const text = (el.textContent ?? '').trim()
     if (!text) continue
-    el.id = slugifyHeading(text.replace(/[#*`_]+/g, '').trim(), i)
+    el.id = uniqueSlug(slugifyHeading(text.replace(/[#*`_]+/g, '').trim(), i), used)
     i += 1
   }
 }

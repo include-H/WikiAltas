@@ -86,6 +86,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/runs/batch", s.handleCreateBatch)
 	m.HandleFunc("POST /api/runs/{id}/resume", s.handleResumeRun)
 	m.HandleFunc("POST /api/runs/{id}/cancel", s.handleCancelRun)
+	m.HandleFunc("DELETE /api/runs/{id}", s.handleDeleteRun)
 	m.HandleFunc("GET /api/runs", s.handleListRuns)
 	m.HandleFunc("GET /api/runs/{id}", s.handleGetRun)
 	m.HandleFunc("GET /api/runs/{id}/events/stream", s.handleRunEventStream)
@@ -101,7 +102,6 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/settings", s.handleGetSettings)
 	m.HandleFunc("PUT /api/settings", s.handlePutSettings)
 	m.HandleFunc("POST /api/settings/test-llm", s.handleTestLLM)
-	m.HandleFunc("POST /api/settings/import-env", s.handleImportEnvSettings)
 	m.HandleFunc("GET /api/runtime", s.handleRuntime)
 }
 
@@ -465,6 +465,22 @@ func (s *Server) handleCreateBatch(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	if err := s.runs.Cancel(r.PathValue("id")); err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleDeleteRun：手工删除工单（正在跑的先停掉，避免删了还在写的孤儿执行器）。
+func (s *Server) handleDeleteRun(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if run, err := s.store.GetRun(id); err == nil && run.Status == domain.RunStatusRunning {
+		if err := s.runs.Cancel(id); err != nil {
+			writeStoreErr(w, err)
+			return
+		}
+	}
+	if err := s.store.DeleteRun(id); err != nil {
 		writeStoreErr(w, err)
 		return
 	}

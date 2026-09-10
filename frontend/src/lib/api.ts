@@ -197,6 +197,11 @@ export function cancelRun(id: string): Promise<void> {
   return request(`/api/runs/${id}/cancel`, { method: 'POST' })
 }
 
+/** 手工删除工单（正在跑的先停再删）。 */
+export function deleteRun(id: string): Promise<void> {
+  return request(`/api/runs/${id}`, { method: 'DELETE' })
+}
+
 export function listRuns(
   status?: string,
   limit = 50,
@@ -251,11 +256,6 @@ export function testLLM(): Promise<{
   error?: string
 }> {
   return request('/api/settings/test-llm', { method: 'POST' })
-}
-
-/** 把进程环境里的 WIKIALTAS_* 重新导入设置（覆盖当前值）。 */
-export function importEnvSettings(): Promise<{ imported: boolean; settings: Settings }> {
-  return request('/api/settings/import-env', { method: 'POST' })
 }
 
 export function getRuntime(): Promise<RuntimeInfo> {

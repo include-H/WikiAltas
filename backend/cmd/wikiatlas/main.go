@@ -36,11 +36,6 @@ func main() {
 
 	// 配置来源：settings 表（SQLite）。首次启动把 env 里的 WIKIATLAS_* 导入一次，
 	// 之后一律以设置页为准（热生效，不需要重启）。
-	if imported, err := st.ImportEnvSettings(); err != nil {
-		log.Printf("import env settings: %v", err)
-	} else if imported {
-		log.Printf("settings imported from env (后续请在设置页修改)")
-	}
 	if st.UsingDefaultPassword() {
 		log.Printf("访问密码仍是出厂密码 1234 —— 请在设置页「访问与隐私」里改掉")
 	}

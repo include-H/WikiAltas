@@ -228,6 +228,28 @@ func (s *Store) DeleteOldRunEvents(keepDays int) (int64, error) {
 	return res.RowsAffected()
 }
 
+// DeleteRun 手工删除一条工单：事件跟着一起删（run_events.run_id 有外键）。
+func (s *Store) DeleteRun(id string) error {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DELETE FROM run_events WHERE run_id = ?`, id); err != nil {
+		return err
+	}
+	res, err := tx.Exec(`DELETE FROM runs WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return ErrNotFound{What: "run"}
+	}
+	return tx.Commit()
+}
+
 // AppendRunEvent inserts the next event for a run and returns it.
 func (s *Store) AppendRunEvent(runID, eventType string, payload map[string]any) (*domain.RunEvent, error) {
 	if payload == nil {

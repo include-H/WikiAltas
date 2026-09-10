@@ -49,6 +49,66 @@ export interface RunProjection {
   failed: boolean
 }
 
+/** 检索类工具 → 「检索资料」阶段。 */
+const RESEARCH_TOOLS = new Set([
+  'read_skill',
+  'search_works',
+  'read_work',
+  'read_doc',
+  'get_tree',
+  'search_web',
+  'fetch_url',
+])
+
+/** 写入类工具 → 「产出内容」阶段。 */
+const WRITE_TOOLS = new Set([
+  'write_content',
+  'patch_section',
+  'create_doc',
+  'upsert_work',
+  'upsert_relation',
+  'attach_library_link',
+])
+
+/**
+ * 阶段一律按"实际发生了什么"来分：模型给的 plan 常常只有一条、状态词也不统一，
+ * 硬跟着它走就会出现"每条工单都停在理解任务"（真实观测）。
+ * 计划里恰好有四段时，用它的四个标题当阶段名。
+ */
+function synthesizePhases(steps: Step[], allDone: boolean, planTitles?: string[] | null): Phase[] {
+  const titles = [
+    planTitles?.[0] ?? '理解任务',
+    planTitles?.[1] ?? '检索资料',
+    planTitles?.[2] ?? '产出内容',
+    planTitles?.[3] ?? '写入并完成',
+  ]
+  const phases: Phase[] = [
+    { id: 'auto-1', title: titles[0], status: 'in_progress', steps: [] },
+    { id: 'auto-2', title: titles[1], status: 'pending', steps: [] },
+    { id: 'auto-3', title: titles[2], status: 'pending', steps: [] },
+    { id: 'auto-4', title: titles[3], status: 'pending', steps: [] },
+  ]
+  let wrote = false
+  let committed = false
+  for (const step of steps) {
+    if (step.kind === 'tool' && WRITE_TOOLS.has(step.name)) wrote = true
+    if (step.kind === 'system') committed = true
+    let idx = 0
+    if (step.kind === 'tool' && RESEARCH_TOOLS.has(step.name) && !wrote) idx = 1
+    else if (step.kind === 'tool' && WRITE_TOOLS.has(step.name)) idx = 2
+    else if (wrote) idx = 3
+    phases[idx].steps.push(step)
+  }
+  // 空阶段不留：只保留有内容的那几段（顺序不变）
+  const kept = phases.filter((ph, i) => ph.steps.length > 0 || i === 0)
+  const lastIdx = Math.max(0, kept.length - 1)
+  kept.forEach((ph, i) => {
+    ph.status = allDone || i < lastIdx ? 'completed' : 'in_progress'
+  })
+  if (committed && kept.length > 1) kept[kept.length - 1].status = 'completed'
+  return kept
+}
+
 /** Semi AIChatDialogue 的 Step 结构（见 widgets/contentItem/dialogueStep.tsx）。 */
 export interface DialogueStep {
   summary: string
@@ -56,9 +116,13 @@ export interface DialogueStep {
   actions?: { summary: string; description?: string }[]
 }
 
-/** Semi AIChatDialogue 的 ContentItem（只需我们用到的那几种类型）。 */
+/**
+ * Semi AIChatDialogue 的 ContentItem。
+ * 必须直接用 Semi 认得的扁平结构（output_text 带 text）：
+ * 之前多包了一层 `{type:'message', content:[...]}`，导致叙事整段不渲染。
+ */
 export type DialogueItem =
-  | { type: 'message'; content: { type: 'output_text'; text: string }[] }
+  | { type: 'output_text'; text: string }
   | { type: 'plan'; content: DialogueStep[] }
 
 /** Semi AIChatDialogue 的 Message。 */
@@ -112,55 +176,26 @@ function artifactOf(p: Record<string, unknown>): { lines?: string[]; note?: stri
 }
 
 /**
- * 把事件流压成「阶段 → 步骤」。
- * plan.updated 驱动阶段；第一个 plan 之前的步骤放在"理解任务"阶段里。
+ * 把事件流压成「阶段 → 步骤」：先按发生顺序收步骤，最后按步骤类型切四段。
  */
 export function projectRun(events: RunEvent[]): RunProjection {
-  const phases: Phase[] = []
-  let current: Phase = { id: 'phase-0', title: '理解任务', status: 'in_progress', steps: [] }
-  phases.push(current)
+  const steps: Step[] = []
   const pendingTools = new Map<string, ToolStep>()
   let done = false
   let failed = false
-  // 阶段骨架只认第一份计划：执行器收尾时会把计划覆盖成固定四步（t1–t4），
-  // 如果按 id 重建，之前收集的叙述与工具芯片会全部丢失（真实观测：四个阶段全空、点不开）。
-  let planLocked = false
+  /** 计划恰好四段时，用它的标题当阶段名（状态词模型各写各的，不采信）。 */
+  let planTitles: string[] | null = null
 
-  const push = (step: Step) => current.steps.push(step)
+  const push = (step: Step) => steps.push(step)
 
   for (const ev of events) {
     const p = payloadOf(ev)
     switch (ev.type) {
       case 'plan.updated': {
         const tasks = p.tasks as RunTask[] | undefined
-        if (!Array.isArray(tasks) || tasks.length === 0) break
-        if (!planLocked) {
-          planLocked = true
-          const previous = new Map(phases.map((ph) => [ph.id, ph]))
-          const next: Phase[] = tasks.map((t) => ({
-            id: t.id,
-            title: t.title,
-            status: t.status,
-            steps: previous.get(t.id)?.steps ?? [],
-          }))
-          // 计划出现之前的步骤（默认阶段）归到第一阶段
-          const leftover = previous.get('phase-0')?.steps ?? []
-          if (leftover.length && next.length) next[0].steps = [...leftover, ...next[0].steps]
-          phases.length = 0
-          phases.push(...next)
-          current = next.find((ph) => ph.status === 'in_progress') ?? next[next.length - 1]
-        } else {
-          // 后续计划只更新状态（按 id 匹配），阶段标题与已收集的步骤保持不变
-          for (const t of tasks) {
-            const ph = phases.find((item) => item.id === t.id)
-            if (ph) ph.status = t.status
-          }
-          const inProgress = tasks.find((t) => t.status === 'in_progress')
-          if (inProgress) {
-            current = phases.find((item) => item.id === inProgress.id) ?? current
-          }
-          // 计划没有点名"进行中"时保持当前阶段不变：
-          // 否则一次收尾计划就会把后续所有芯片都塞进最后一段（观测中出现过 13 项挤在"自检收尾"）。
+        if (Array.isArray(tasks) && tasks.length === 4) {
+          const titles = tasks.map((t) => (t.title ?? '').trim()).filter(Boolean)
+          if (titles.length === 4) planTitles = titles
         }
         break
       }
@@ -231,7 +266,7 @@ export function projectRun(events: RunEvent[]): RunProjection {
         const version = typeof p.version === 'number' ? p.version : undefined
         // 写入回执不单独占行：同阶段通常已有 write_content / patch_section 芯片；
         // 没有工具芯片时（如 mock 路径）才补一枚，避免刷屏。
-        const hasWriteChip = current.steps.some(
+        const hasWriteChip = steps.some(
           (s) => s.kind === 'tool' && (s.name === 'write_content' || s.name === 'patch_section'),
         )
         if (!hasWriteChip) {
@@ -265,9 +300,7 @@ export function projectRun(events: RunEvent[]): RunProjection {
     }
   }
 
-  // 未开始且没有内容的阶段不必占位置
-  const cleaned = phases.filter((ph) => ph.steps.length > 0 || ph.status !== 'pending')
-  return { phases: cleaned.length ? cleaned : phases, done, failed }
+  return { phases: synthesizePhases(steps, done, planTitles), done, failed }
 }
 
 /** SSE 重连时可能收到同一 seq 的重复事件，按 id 去重。 */
@@ -326,7 +359,16 @@ function toolActions(steps: Step[]): { summary: string; description?: string }[]
 /** 工具描述压成一行（≤100 字），去掉换行与多余空白。 */
 function compactDetail(detail?: string): string | undefined {
   if (!detail) return undefined
-  const flat = detail.replace(/\s+/g, ' ').trim()
+  // 输入摘要常是 JSON（{"q":"白狼崛起"} count=1）：去壳去引号，别把 JSON dump 给用户看
+  const flat = detail
+    .replace(/\s+/g, ' ')
+    // 正文类字段是产物，不该出现在一行摘要里（芯片只留"做了什么"）
+    .replace(/"(contentMd|newMarkdown|previewMd)"\s*:\s*"(?:[^"\\]|\\.)*"\s*,?/g, '')
+    .replace(/[{}]/g, '')
+    .replace(/"([^"]*)"\s*:\s*/g, '$1: ')
+    .replace(/"([^"]*)"/g, '$1')
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '…')
+    .trim()
   if (!flat) return undefined
   return flat.length > 100 ? `${flat.slice(0, 100)}…` : flat
 }
@@ -336,7 +378,10 @@ function compactDetail(detail?: string): string | undefined {
  * 阶段（plan.updated）→ 可折叠的 Step，阶段内的工具调用 → 该 Step 的 actions；
  * 叙事句与写入回执 → 顺序插入的 output_text。
  */
-export function buildDialogueMessage(events: RunEvent[], run: Pick<Run, 'id' | 'status'>): DialogueMessage {
+export function buildDialogueMessages(
+  events: RunEvent[],
+  run: Pick<Run, 'id' | 'status'>,
+): DialogueMessage[] {
   const { phases } = projectRun(dedupeEvents(events))
   const content: DialogueItem[] = []
   let lastNarrative = ''
@@ -347,7 +392,7 @@ export function buildDialogueMessage(events: RunEvent[], run: Pick<Run, 'id' | '
       if (step.kind === 'narrative') {
         if (step.text === lastNarrative) continue
         lastNarrative = step.text
-        content.push({ type: 'message', content: [{ type: 'output_text', text: step.text }] })
+        content.push({ type: 'output_text', text: step.text })
       }
     }
     const actions = toolActions(phase.steps)
@@ -363,14 +408,23 @@ export function buildDialogueMessage(events: RunEvent[], run: Pick<Run, 'id' | '
   const tail = phases[phases.length - 1]?.steps ?? []
   for (const s of tail) {
     if (s.kind === 'system') {
-      content.push({ type: 'message', content: [{ type: 'output_text', text: s.text }] })
+      content.push({ type: 'output_text', text: s.text })
     }
   }
 
-  return {
-    id: run.id,
+  // 一条消息只放一个内容项：Semi 的自定义渲染节点用「消息下标」当 key，
+  // 同一条消息里塞多个 plan 会被 React 当成重复 key，只剩第一个能渲染出来。
+  // 同角色的连续消息会被 Semi 自动折叠成一组（continueSend），观感不变。
+  return content.map((item, index) => ({
+    id: `${run.id}-${index}`,
     role: 'assistant',
-    status: messageStatus(run),
-    content,
-  }
+    status: index === content.length - 1 ? messageStatus(run) : 'completed',
+    content: [item],
+  }))
+}
+
+/** 兼容旧调用：只要一条消息时取第一条。 */
+export function buildDialogueMessage(events: RunEvent[], run: Pick<Run, 'id' | 'status'>): DialogueMessage {
+  const messages = buildDialogueMessages(events, run)
+  return messages[messages.length - 1] ?? { id: run.id, role: 'assistant', status: messageStatus(run), content: [] }
 }

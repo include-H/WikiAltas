@@ -1,7 +1,7 @@
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { useMemo } from 'react'
-import { transformEpigraph } from '../../lib/mdOutline'
+import { slugifyHeading, transformEpigraph, uniqueSlug } from '../../lib/mdOutline'
 
 marked.setOptions({ gfm: true, breaks: true })
 
@@ -50,20 +50,12 @@ function ensureHeadingIds(html: string, originalMd: string): string {
   if (texts.length === 0) return html
 
   let i = 0
+  const used = new Map<string, number>()
   return html.replace(/<h([23])([^>]*)>/gi, (match, level, attrs) => {
     const text = texts[i] ?? `h-${i}`
     i += 1
     if (/\sid="/i.test(attrs)) return match
-    const id = slug(text, i)
+    const id = uniqueSlug(slugifyHeading(text, i), used)
     return `<h${level}${attrs} id="${id}">`
   })
-}
-
-function slug(text: string, index: number): string {
-  const base = text
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s-]/gu, '')
-    .trim()
-    .replace(/\s+/g, '-')
-  return base || `h-${index}`
 }

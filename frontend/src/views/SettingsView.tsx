@@ -12,7 +12,7 @@ import {
   Typography,
 } from '@douyinfe/semi-ui'
 import type { RuntimeInfo, Settings } from '../types'
-import { getRuntime, getSettings, importEnvSettings, putSettings, testLLM } from '../lib/api'
+import { getRuntime, getSettings, putSettings, testLLM } from '../lib/api'
 import { useAppStore } from '../lib/store'
 import { useNavigate } from 'react-router-dom'
 
@@ -173,18 +173,6 @@ export default function SettingsView() {
     }
   }
 
-  const reimport = async () => {
-    try {
-      const res = await importEnvSettings()
-      setSettings(res.settings)
-      setForm(toForm(res.settings))
-      Toast.success('已从环境变量重新导入')
-      setRuntime(await getRuntime().catch(() => null))
-    } catch (e) {
-      Toast.error(e instanceof Error ? e.message : '导入失败')
-    }
-  }
-
   const keyTag = (configured?: boolean) =>
     configured ? (
       <Tag size="small" color="green">
@@ -222,16 +210,13 @@ export default function SettingsView() {
           设置
         </Title>
         <div className="settings-head-actions">
-          <Button theme="borderless" onClick={() => void reimport()}>
-            从环境变量重新导入
-          </Button>
           <Button theme="solid" type="primary" loading={saving} onClick={() => void save()}>
             保存
           </Button>
         </div>
       </div>
       <Text type="tertiary" size="small">
-        配置存在本地 SQLite（不再依赖 .env）；保存后立刻对下一个工单生效。
+        配置存在本地 SQLite；保存后立刻对下一个工单生效。
       </Text>
 
       <div className="settings-grid">

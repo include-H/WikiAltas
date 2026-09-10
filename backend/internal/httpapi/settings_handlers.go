@@ -167,21 +167,6 @@ func (s *Server) handleTestLLM(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "model": client.Model(), "latencyMs": latency, "reply": reply})
 }
 
-// handleImportEnvSettings：把当前进程环境里的 WIKIALTAS_* 重新导入设置（覆盖）。
-func (s *Server) handleImportEnvSettings(w http.ResponseWriter, _ *http.Request) {
-	imported, err := s.store.ReimportEnvSettings()
-	if err != nil {
-		writeStoreErr(w, err)
-		return
-	}
-	st, err := s.store.GetSettings()
-	if err != nil {
-		writeStoreErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"imported": imported, "settings": s.settingsForResponse(st)})
-}
-
 // handleRuntime：设置页「关于/运行时」区块的数据。
 func (s *Server) handleRuntime(w http.ResponseWriter, _ *http.Request) {
 	st, _ := s.store.GetSettings()

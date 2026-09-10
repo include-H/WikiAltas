@@ -1,8 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
-import { AIChatDialogue, Button, Empty, Spin, Table, Tag, Toast, Typography } from '@douyinfe/semi-ui'
+import {
+  AIChatDialogue,
+  Button,
+  Empty,
+  Modal,
+  Spin,
+  Table,
+  Tag,
+  Toast,
+  Typography,
+} from '@douyinfe/semi-ui'
 import type { Run } from '../types'
-import { cancelRun, getRun, listRuns, resumeRun, streamRunEvents } from '../lib/api'
-import { buildDialogueMessage } from '../lib/runProjection'
+import { cancelRun, deleteRun, getRun, listRuns, resumeRun, streamRunEvents } from '../lib/api'
+import { buildDialogueMessages } from '../lib/runProjection'
 import type { DialogueStep } from '../lib/runProjection'
 import type { RunEvent } from '../types'
 
@@ -98,6 +108,23 @@ export default function RunList() {
     }
   }
 
+  /** 手工删除：正在跑的工单先停下来再删，事件流一并删除（正文改动不受影响）。 */
+  const remove = (run: Run) => {
+    Modal.confirm({
+      title: '删除这条工单？',
+      content: `「${run.goal || run.intent}」的事件流会一并删除，正文改动不受影响。`,
+      okText: '删除',
+      okButtonProps: { type: 'danger', theme: 'solid' },
+      cancelText: '取消',
+      onOk: async () => {
+        await deleteRun(run.id)
+        Toast.success('已删除')
+        setSelected((cur) => (cur?.id === run.id ? null : cur))
+        await load()
+      },
+    })
+  }
+
   return (
     <div className="run-list-view">
       <div className="run-list-header">
@@ -118,7 +145,8 @@ export default function RunList() {
           pagination={false}
           size="small"
           onRow={(r) => ({
-            onClick: () => setSelected(r as Run),
+            // 点行要真的把事件流拉回来：只 setSelected 的话详情永远是空投影（只剩"理解任务"）
+            onClick: () => void openRun(r as Run),
             style: { cursor: 'pointer' },
           })}
           columns={[
@@ -151,7 +179,7 @@ export default function RunList() {
             },
             {
               title: '操作',
-              width: 180,
+              width: 220,
               render: (_: unknown, r: Run) => (
                 <div onClick={(e) => e.stopPropagation()}>
                   {(r.status === 'interrupted' || r.status === 'failed') && (
@@ -173,6 +201,15 @@ export default function RunList() {
                       取消
                     </Button>
                   )}
+                  <Button
+                    size="small"
+                    type="danger"
+                    theme="borderless"
+                    style={{ marginLeft: 8 }}
+                    onClick={() => remove(r)}
+                  >
+                    删除
+                  </Button>
                 </div>
               ),
             },
@@ -191,7 +228,7 @@ export default function RunList() {
             </Button>
           </div>
           <AIChatDialogue
-            chats={[buildDialogueMessage(events, selected)] as never}
+            chats={buildDialogueMessages(events, selected) as never}
             roleConfig={{ assistant: { name: 'Altas' } }}
             mode="noBubble"
             showReset={false}

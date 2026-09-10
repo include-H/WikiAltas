@@ -3,6 +3,8 @@ package run
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -115,6 +117,18 @@ func (m *Manager) executeMock(ctx context.Context, runID string, intent domain.R
 			})
 			author := domain.AuthorLLM
 			summary := "mock librarian write"
+			// 慢速演示（WIKIATLAS_MOCK_WRITE_DELAY_MS）：先落骨架、隔一会儿再落全文，
+			// 用来验证"前端在写入过程中会自己刷新"（真实模型是逐章写，过程更长）。
+			if delay := mockWriteDelay(); delay > 0 {
+				skeleton := mockSkeleton(md)
+				if _, err := m.putMockContent(targetType, targetID, skeleton, author, &runID, &summary); err == nil {
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(delay):
+					}
+				}
+			}
 			var err error
 			if targetType == "doc" {
 				_, err = m.store.PutDocContent(targetID, domain.PutContentBody{
@@ -232,6 +246,41 @@ func (m *Manager) executeMock(ctx context.Context, runID string, intent domain.R
 	_ = m.store.UpdateRunPlan(runID, plan)
 	m.emit(runID, "run.completed", map[string]any{"summary": "工单完成（mock executor）"})
 	_ = m.store.CompleteRun(runID, map[string]any{"summary": "ok", "intent": string(intent), "mock": true})
+}
+
+// mockWriteDelay 慢速演示间隔（0 = 关闭，默认一次性写完）。
+func mockWriteDelay() time.Duration {
+	if v := os.Getenv("WIKIATLAS_MOCK_WRITE_DELAY_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Millisecond
+		}
+	}
+	return 0
+}
+
+// mockSkeleton 只留标题、题记与各章标题（正文留空）。
+func mockSkeleton(md string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(md, "\n") {
+		if strings.HasPrefix(line, "#") || strings.HasPrefix(line, ":::") || strings.HasPrefix(line, ">") ||
+			strings.TrimSpace(line) == "" {
+			b.WriteString(line + "\n")
+		}
+	}
+	return b.String()
+}
+
+// putMockContent 统一落库（work / doc）。
+func (m *Manager) putMockContent(targetType, targetID, md string, author domain.Author, runID, summary *string) (*domain.ContentCommitResult, error) {
+	if targetType == "doc" {
+		_, err := m.store.PutDocContent(targetID, domain.PutContentBody{
+			ContentMd: md, Author: author, RunID: runID, Summary: summary,
+		})
+		return nil, err
+	}
+	return m.store.PutWorkContent(targetID, domain.PutContentBody{
+		ContentMd: md, Author: author, RunID: runID, Summary: summary,
+	})
 }
 
 func mockMarkdown(goal string, intent domain.RunIntent, medium domain.Medium, skillNames []string) string {

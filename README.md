@@ -37,21 +37,18 @@ go run ./cmd/wikiatlas -db ./data/wikiatlas.db -addr :8080 -seed \
 cd frontend && npm run dev
 ```
 
-### 环境变量（LLM / Exa，可选）
+### 环境变量
+
+**配置项一律在设置页里改**（存在 SQLite，不读 env）。进程级只认一个：
 
 ```
-WIKIATLAS_LLM_BASE_URL=
-WIKIATLAS_LLM_MODEL=
-WIKIATLAS_LLM_API_KEY=
-WIKIATLAS_EXA_API_KEY=
+WIKIATLAS_ADDR=0.0.0.0:8080   # 监听地址，供 Docker/一次性启动用（默认 127.0.0.1:8080）
 ```
-
-也可在前端 Settings 里配置。
 
 ## 访问与隐私（软门槛）
 
 - **访问密码**：新库出厂密码 **1234**（`/login` 输它即可进管理态，设置页「访问与隐私」里改）。
-  改密码会立即让旧会话失效；也可以用 `WIKIATLAS_ADMIN_PASSWORD` 在首次导入 env 时指定。
+  改密码会立即让旧会话失效。
 - **访客**：不登录**绝对看不到非公开内容**——只能只读浏览公开文档（树 / 详情 / 资料 / 检索），
   私有节点一律 404 或不出现，其余接口 401。
 - **节点可见性**：每个宇宙/系列/单作/资料夹都有 `public | private`，**默认 private**；

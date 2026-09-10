@@ -9,13 +9,14 @@ import { UNKNOWN_WORK_ID, folderPath, workPath } from '../lib/routes'
 import OutlinePane from '../components/shell/OutlinePane'
 import MarkdownEditor from '../components/editor/MarkdownEditor'
 import { parseOutline } from '../lib/mdOutline'
+import { useLiveRefresh } from '../lib/useLiveRefresh'
 
 const { Text } = Typography
 
 export default function DocView() {
   const { id: workIdParam, docId } = useParams()
   const nav = useNavigate()
-  const { contentStamp, lastCommitted, setAiPanelOpen, nodes, docMode, me } = useAppStore()
+  const { contentStamp, lastCommitted, setAiPanelOpen, nodes, docMode, me, staging } = useAppStore()
   const [work, setWork] = useState<Work | null>(null)
   const [doc, setDoc] = useState<Doc | null>(null)
   const [loading, setLoading] = useState(true)
@@ -26,10 +27,12 @@ export default function DocView() {
   // Sentinel `-` means the work UUID is unknown (e.g. search hit → doc deep link)
   const workId = workIdParam && workIdParam !== UNKNOWN_WORK_ID ? workIdParam : null
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!docId) return
-    setLoading(true)
-    setError(null)
+    if (!opts?.silent) {
+      setLoading(true)
+      setError(null)
+    }
     try {
       // Resolve doc solely by its UUID — no tree/slug map needed
       const dr = await getDoc(docId)
@@ -50,10 +53,11 @@ export default function DocView() {
         setWork(null)
       }
     } catch (e) {
+      if (opts?.silent) return
       setError(e instanceof Error ? e.message : '加载资料失败')
       setDoc(null)
     } finally {
-      setLoading(false)
+      if (!opts?.silent) setLoading(false)
     }
   }, [docId, workId])
 
@@ -67,6 +71,9 @@ export default function DocView() {
   }, [contentStamp, lastCommitted, doc, load])
 
   const headings = useMemo(() => parseOutline(outlineMd), [outlineMd])
+
+  const aiWriting = !!doc && staging?.targetId === doc.id
+  useLiveRefresh(aiWriting, useCallback(() => load({ silent: true }), [load]))
 
   const linkedTitles = useMemo(
     () =>
