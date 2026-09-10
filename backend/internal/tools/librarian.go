@@ -730,6 +730,14 @@ func ReplaceSection(md, heading, newMarkdown string) (string, error) {
 		}
 	}
 	body := strings.TrimSpace(newMarkdown)
+	// 模型经常把 section 标题一起带进 newMarkdown（"## 1. 作品概览\n\n正文…"），
+	// 而本工具是"替换标题下的正文"，所以先把开头那行同名标题剥掉，避免标题重复。
+	if m := sectionHeading.FindStringSubmatch(body); len(m) > 2 {
+		title := strings.TrimSpace(m[2])
+		if strings.Contains(title, heading) || strings.EqualFold(title, heading) {
+			body = strings.TrimSpace(strings.TrimPrefix(body, m[0]))
+		}
+	}
 	if !strings.HasSuffix(body, "\n") {
 		body += "\n"
 	}

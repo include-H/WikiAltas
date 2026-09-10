@@ -252,3 +252,22 @@ func TestReplaceSectionDirect(t *testing.T) {
 func contains(s, sub string) bool {
 	return strings.Contains(s, sub)
 }
+
+// 模型常把 "## 1. 概览" 一起写进 newMarkdown：工具必须剥掉它，
+// 否则正文里会出现重复标题（真实观测中同一章标题重复了 3 次）。
+func TestReplaceSectionStripsDuplicatedHeading(t *testing.T) {
+	md := "# T\n\n## 1. 概览\n\n旧概览内容。\n\n## 2. 设定\n\n设定内容。\n"
+	out, err := tools.ReplaceSection(md, "1. 概览", "## 1. 概览\n\n新概览内容。\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(out, "## 1. 概览"); n != 1 {
+		t.Fatalf("标题重复了 %d 次:\n%s", n, out)
+	}
+	if !strings.Contains(out, "新概览内容") || strings.Contains(out, "旧概览内容") {
+		t.Fatalf("替换结果不对:\n%s", out)
+	}
+	if !strings.Contains(out, "设定内容") {
+		t.Fatalf("下一章丢失:\n%s", out)
+	}
+}
