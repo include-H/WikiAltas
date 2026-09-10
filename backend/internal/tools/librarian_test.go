@@ -187,6 +187,57 @@ func TestPatchSection(t *testing.T) {
 	}
 }
 
+// 资料夹里的长文必须支持"按节替换"：这是 6000 字分析稿能分节写入的前提（之前只支持 works）。
+func TestPatchSectionOnDoc(t *testing.T) {
+	d, st := newDeps(t)
+	reg := tools.NewLibrarianRegistry(d)
+	series, _ := st.CreateWork(domain.CreateWorkBody{Kind: domain.WorkKindSeries, Title: "辉煌时代"})
+	doc, err := st.CreateDoc(series.ID, domain.CreateDocBody{Title: "从虚拟机到智能网卡"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PutDocContent(doc.ID, domain.PutContentBody{
+		ContentMd: "# 从虚拟机到智能网卡\n\n## 一、起点\n\n旧内容。\n\n## 二、展开\n\n二的内容。\n",
+		Author:    domain.AuthorHuman,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	res := call(t, reg, "patch_section", map[string]any{
+		"targetType":  "doc",
+		"targetId":    doc.ID,
+		"heading":     "一、起点",
+		"newMarkdown": "## 一、起点\n\n新内容，比原来更完整。\n",
+	})
+	if res["ok"] != true {
+		t.Fatalf("patch doc: %v", res)
+	}
+	got, _ := st.GetDoc(doc.ID)
+	if !contains(got.ContentMd, "新内容，比原来更完整") || contains(got.ContentMd, "旧内容") {
+		t.Fatalf("doc content=%s", got.ContentMd)
+	}
+	if n := strings.Count(got.ContentMd, "## 一、起点"); n != 1 {
+		t.Fatalf("标题重复 %d 次: %s", n, got.ContentMd)
+	}
+	if !contains(got.ContentMd, "二的内容") {
+		t.Fatalf("下一节丢了: %s", got.ContentMd)
+	}
+
+	// 空内容同样要被拒绝（防止把整节删空）
+	bad := call(t, reg, "patch_section", map[string]any{
+		"targetType": "doc", "targetId": doc.ID, "heading": "二、展开", "newMarkdown": "   ",
+	})
+	if bad["ok"] != false {
+		t.Fatalf("空内容应被拒绝: %v", bad)
+	}
+
+	// read_doc 能读回
+	r := call(t, reg, "read_doc", map[string]any{"id": doc.ID})
+	if r["ok"] != true || !contains(r["contentMd"].(string), "新内容，比原来更完整") {
+		t.Fatalf("read_doc: %v", r)
+	}
+}
+
 func TestNarrativeAndPlan(t *testing.T) {
 	d, _ := newDeps(t)
 	var lines []string

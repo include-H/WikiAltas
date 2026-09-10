@@ -33,6 +33,8 @@ export default function AppShell() {
     () => nodes.find((n) => n.id === workId)?.title,
     [nodes, workId],
   )
+  // 打开资料时把资料 id 一并给面板：意图才会是 write_doc，而不是拿系列去 continue_wiki
+  const docId = params.docId ?? null
 
   return (
     <Layout hasSider className="app-shell">
@@ -49,7 +51,7 @@ export default function AppShell() {
         </div>
         {aiPanelOpen ? (
           <div className="ai-float">
-            <AiPanel workId={workId} workTitle={workTitle} />
+            <AiPanel workId={workId} workTitle={workTitle} docId={docId} />
           </div>
         ) : (
           <FloatButton

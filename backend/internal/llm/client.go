@@ -89,10 +89,12 @@ type OpenAIClient struct {
 
 // NewOpenAIClient creates a client.
 func NewOpenAIClient(cfg Config) *OpenAIClient {
-	// 逐章写作每次输出不大，4096 足够一章；没显式配置时给个确定值，
-	// 避免依赖各家服务端差异很大的默认上限。
+	// 默认输出上限 8192：足够写完整的一章（1000–1500 汉字 ≈ 2–3k token）留足余量，
+	// 又不至于让模型一次吐出整篇长文（那会被模型自身预算截断 → 残稿覆盖正文）。
+	// 端点通常不校验 max_tokens 上限（实测 131072 也接受），真正的约束来自模型自身。
+	// 需要时用 WIKIATLAS_LLM_MAX_TOKENS 覆盖。
 	if cfg.MaxTokens == nil {
-		def := 4096
+		def := 8192
 		cfg.MaxTokens = &def
 	}
 	return &OpenAIClient{

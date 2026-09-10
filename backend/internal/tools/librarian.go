@@ -137,6 +137,42 @@ func NewLibrarianRegistry(d LibrarianDeps) *Registry {
 			})
 		}))
 
+	r.Register(NewFuncTool("read_doc", "读取资料正文（可按 ## 章节只读一节）",
+		func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+			var p struct {
+				ID      string `json:"id"`
+				Section string `json:"section"`
+			}
+			if err := json.Unmarshal(input, &p); err != nil {
+				return nil, err
+			}
+			if p.ID == "" {
+				p.ID, _ = d.Context["docId"].(string)
+			}
+			if p.ID == "" {
+				return jsonOK(map[string]any{"ok": false, "message": "id 缺失"})
+			}
+			doc, err := d.Store.GetDoc(p.ID)
+			if err != nil {
+				return jsonOK(map[string]any{"ok": false, "message": err.Error()})
+			}
+			content := doc.ContentMd
+			if p.Section != "" && content != "" {
+				section, err := ExtractSection(content, p.Section)
+				if err != nil {
+					return jsonOK(map[string]any{"ok": false, "message": err.Error()})
+				}
+				content = section
+			}
+			if len([]rune(content)) > 30000 {
+				content = string([]rune(content)[:30000]) + "\n…（截断，可用 section 参数只读某一节）"
+			}
+			return jsonOK(map[string]any{
+				"ok": true, "id": doc.ID, "title": doc.Title, "folderOf": doc.FolderOf,
+				"contentVer": doc.ContentVer, "contentMd": content,
+			})
+		}))
+
 	r.Register(NewFuncTool("get_tree", "获取作品树（可按 parentId 过滤子树）",
 		func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 			var p struct {
@@ -328,6 +364,7 @@ func NewLibrarianRegistry(d LibrarianDeps) *Registry {
 	r.Register(NewFuncTool("patch_section", "按 ## 锚点局部替换章节正文",
 		func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 			var p struct {
+				TargetType  string `json:"targetType"` // work | doc，可空（按上下文推断）
 				TargetID    string `json:"targetId"`
 				Heading     string `json:"heading"`
 				NewMarkdown string `json:"newMarkdown"`
@@ -344,13 +381,33 @@ func NewLibrarianRegistry(d LibrarianDeps) *Registry {
 					"message": "newMarkdown 为空，已拒绝（防止把整章删空）。请补全该章正文后重试。",
 				})
 			}
-			w, err := d.Store.GetWork(p.TargetID)
-			if err != nil {
-				return jsonOK(map[string]any{"ok": false, "message": err.Error()})
+			if p.TargetID == "" {
+				if id, _ := d.Context["docId"].(string); id != "" && p.TargetType != "work" {
+					p.TargetType, p.TargetID = "doc", id
+				} else if id, _ := d.Context["workId"].(string); id != "" {
+					p.TargetType, p.TargetID = "work", id
+				}
 			}
+			if p.TargetType == "" {
+				p.TargetType = "work"
+			}
+			// 资料夹里的长文与作品正文走同一套"按节替换"逻辑
 			cur := ""
-			if w.ContentMd != nil {
-				cur = *w.ContentMd
+			switch p.TargetType {
+			case "doc":
+				doc, err := d.Store.GetDoc(p.TargetID)
+				if err != nil {
+					return jsonOK(map[string]any{"ok": false, "message": err.Error()})
+				}
+				cur = doc.ContentMd
+			default:
+				w, err := d.Store.GetWork(p.TargetID)
+				if err != nil {
+					return jsonOK(map[string]any{"ok": false, "message": err.Error()})
+				}
+				if w.ContentMd != nil {
+					cur = *w.ContentMd
+				}
 			}
 			next, err := ReplaceSection(cur, p.Heading, p.NewMarkdown)
 			if err != nil {
@@ -367,15 +424,20 @@ func NewLibrarianRegistry(d LibrarianDeps) *Registry {
 				body.RunID = &runID
 			}
 			emit("content.staging", map[string]any{
-				"targetType": "work", "targetId": p.TargetID,
+				"targetType": p.TargetType, "targetId": p.TargetID,
 				"previewMd": truncateRunes(p.NewMarkdown, 200),
 			})
-			res, err := d.Store.PutWorkContent(p.TargetID, body)
+			var res *domain.ContentCommitResult
+			if p.TargetType == "doc" {
+				res, err = d.Store.PutDocContent(p.TargetID, body)
+			} else {
+				res, err = d.Store.PutWorkContent(p.TargetID, body)
+			}
 			if err != nil {
 				return jsonOK(map[string]any{"ok": false, "message": err.Error()})
 			}
 			emit("content.committed", map[string]any{
-				"targetType": "work", "targetId": p.TargetID, "version": res.ContentVer,
+				"targetType": p.TargetType, "targetId": p.TargetID, "version": res.ContentVer,
 			})
 			return jsonOK(map[string]any{"ok": true, "contentVer": res.ContentVer, "revisionId": res.RevisionID})
 		}))
@@ -576,6 +638,10 @@ func ToolSchemas() []ToolSchema {
 			"id":      map[string]any{"type": "string"},
 			"section": map[string]any{"type": "string", "description": "可空；只读该 ## 章节（标题关键词）"},
 		}, Required: []string{"id"}},
+		{Name: "read_doc", Desc: "读取资料正文（资料夹里的长文）", Props: map[string]any{
+			"id":      map[string]any{"type": "string", "description": "可空，默认读当前资料"},
+			"section": map[string]any{"type": "string", "description": "可空；只读该 ## 小节"},
+		}},
 		{Name: "get_tree", Desc: "获取作品树", Props: map[string]any{
 			"parentId": map[string]any{"type": "string", "description": "可空，过滤子树"},
 		}},
@@ -592,6 +658,7 @@ func ToolSchemas() []ToolSchema {
 			"summary":    map[string]any{"type": "string"},
 		}, Required: []string{"contentMd"}},
 		{Name: "patch_section", Desc: "按 ## 锚点局部替换", Props: map[string]any{
+			"targetType":  map[string]any{"type": "string", "description": "work|doc，可空（按上下文推断）"},
 			"targetId":    map[string]any{"type": "string"},
 			"heading":     map[string]any{"type": "string"},
 			"newMarkdown": map[string]any{"type": "string"},

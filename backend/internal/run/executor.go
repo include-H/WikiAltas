@@ -514,19 +514,35 @@ func buildInitialMessages(intent domain.RunIntent, goal string, ctxMap map[strin
 	case domain.RunIntentRewriteSection:
 		sys.WriteString("本工单是增量编辑：只改指定章节，不套 9 章骨架，不重写其他章节。\n")
 	case domain.RunIntentWriteDoc:
-		sys.WriteString("本工单是资料文档：不强制 9 章，按用户要求自由结构写作。\n")
+		sys.WriteString("本工单是资料文档（资料夹里的长文/分析稿）：不强制 9 章，按用户要求自由结构写作。\n")
+		sys.WriteString("· 先读现状：read_doc 看已有正文（也可用 section 只看一节），别凭空重写用户已有的稿子；\n")
+		sys.WriteString("· 先写骨架再逐节填：write_content(targetType=doc) 写 # 标题 + ## 小节，然后 patch_section(targetType=doc) 逐节补正文；\n")
+		sys.WriteString("· 单次输出有上限（约 4000 token），6000 字这种长文必须一节一节写，不要尝试一次写完；\n")
+		sys.WriteString("· 保留作者原有结构、用词与论证顺序，只补事实、理顺逻辑、统一术语。\n")
 	case domain.RunIntentAnswer:
 		sys.WriteString("本工单是问答：读取必要上下文后用 answer 回答。\n")
 	}
 	if len(skillFiles) > 0 {
 		sys.WriteString("\n=== wiki-writing skill（请遵守）===\n")
+		// 上下文预算：skill 是每次工单都要塞的固定成本，三份文件（SKILL+core+media-*）
+		// 曾经各留 18k 字符 = 最多 5.4 万字符，足以把模型窗口挤爆。
+		// 现在单文件 8k、总量 1.6 万字符封顶；不够就按需用 read_skill 再读。
+		const (
+			maxSkillFileChars  = 8000
+			maxSkillTotalChars = 16000
+		)
+		used := 0
 		for _, f := range skillFiles {
-			sys.WriteString("\n----- " + f.Name + " -----\n")
-			// cap each file to keep context manageable
-			c := f.Content
-			if len(c) > 18000 {
-				c = c[:18000] + "\n…（截断）"
+			if used >= maxSkillTotalChars {
+				sys.WriteString("\n（skill 其余文件已省略，需要时用 read_skill 读取。）\n")
+				break
 			}
+			sys.WriteString("\n----- " + f.Name + " -----\n")
+			c := f.Content
+			if len(c) > maxSkillFileChars {
+				c = string([]rune(c)[:maxSkillFileChars]) + "\n…（截断，完整内容用 read_skill 读）"
+			}
+			used += len(c)
 			sys.WriteString(c)
 			sys.WriteString("\n")
 		}
