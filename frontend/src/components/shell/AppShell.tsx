@@ -16,7 +16,7 @@ export default function AppShell() {
   const params = useParams()
   const loc = useLocation()
 
-  // 深链：?ai=1 打开馆员面板；?batch=<id> 打开批次卡（两者都能用于外部链接）
+  // 深链：?ai=1 打开 AI 面板；?batch=<id> 打开批次卡（两者都能用于外部链接）
   useEffect(() => {
     const params = new URLSearchParams(loc.search)
     if (params.get('ai') === '1') setAiPanelOpen(true)

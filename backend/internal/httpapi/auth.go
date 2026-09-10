@@ -91,7 +91,8 @@ func clearLoginFails(key string) {
 }
 
 func (s *Server) signSession(username string, exp int64) string {
-	payload := username + "|" + strconv.FormatInt(exp, 10)
+	// 指纹 = 当前访问密码哈希的摘要：改密码 → 旧 Cookie 全部失效
+	payload := username + "|" + strconv.FormatInt(exp, 10) + "|" + s.store.SessionFingerprint()
 	mac := hmac.New(sha256.New, []byte(s.store.SessionSecret()))
 	mac.Write([]byte(payload))
 	return payload + "|" + hex.EncodeToString(mac.Sum(nil))
@@ -99,16 +100,19 @@ func (s *Server) signSession(username string, exp int64) string {
 
 func (s *Server) verifySession(token string) (string, bool) {
 	parts := strings.Split(token, "|")
-	if len(parts) != 3 {
+	if len(parts) != 4 {
 		return "", false
 	}
-	username, expStr, sig := parts[0], parts[1], parts[2]
+	username, expStr, fp, sig := parts[0], parts[1], parts[2], parts[3]
 	exp, err := strconv.ParseInt(expStr, 10, 64)
 	if err != nil || time.Now().Unix() > exp {
 		return "", false
 	}
+	if fp != s.store.SessionFingerprint() {
+		return "", false
+	}
 	mac := hmac.New(sha256.New, []byte(s.store.SessionSecret()))
-	mac.Write([]byte(username + "|" + expStr))
+	mac.Write([]byte(username + "|" + expStr + "|" + fp))
 	want := hex.EncodeToString(mac.Sum(nil))
 	if !hmac.Equal([]byte(want), []byte(sig)) {
 		return "", false
@@ -221,6 +225,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
+		Secure:   r.TLS != nil,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "username": username})

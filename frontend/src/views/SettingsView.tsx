@@ -282,11 +282,11 @@ export default function SettingsView() {
               mode="password"
               value={form.exaApiKey}
               onChange={(v) => set('exaApiKey', v)}
-              placeholder={settings?.search.exaApiKeyConfigured ? '已配置，留空不修改' : '未配置时馆员只能靠站内知识，事实会标「待核实」'}
+              placeholder={settings?.search.exaApiKeyConfigured ? '已配置，留空不修改' : '未配置时 Altas 只用站内知识，事实标「待核实」'}
             />
           </div>
           <Text type="tertiary" size="small">
-            馆员用它核实发行日期、销量、获奖这类外部事实；结果按 query 缓存 30 天，不重复消耗额度。
+            Altas 用它核实发行日期、销量、获奖这类外部事实；结果按 query 缓存 30 天。
           </Text>
         </Card>
 
@@ -324,8 +324,8 @@ export default function SettingsView() {
 
         <Card title="访问与隐私" className="settings-card">
           <Text type="tertiary" size="small">
-            未登录只能阅读「公开」文档；公开要求自身与所有祖先都是公开，资料继承所属节点的可见性。
-            访问密码只是**防止误公开**的软门槛（比如以后的 Gal 条目），不是安全边界。
+            访问密码是管理态的唯一入口：**未登录只能读公开文档，私有内容一律看不到**
+            （公开要求自身与所有祖先都是公开，资料继承所属节点）。
           </Text>
           <div className="settings-field-inline" style={{ marginTop: 10 }}>
             <div className="settings-field">

@@ -46,7 +46,7 @@ export default function TopBar() {
 
   const routes = useMemo(() => {
     if (onSettings) return [ROOT_CRUMB, { name: '设置' }]
-    if (onRuns) return [ROOT_CRUMB, { name: '馆员工单' }]
+    if (onRuns) return [ROOT_CRUMB, { name: 'Altas 工单' }]
     if (!onDoc || path.length === 0) return [ROOT_CRUMB, { name: '首页' }]
     const crumbs: { name: string; path?: string }[] = [
       ROOT_CRUMB,
@@ -106,7 +106,7 @@ export default function TopBar() {
           </Dropdown>
         )}
         {me.authed && (
-        <Tooltip content="问馆员" position="bottom">
+        <Tooltip content="问 Altas" position="bottom">
           <Button
             className="ai-topbar-btn"
             theme="borderless"
@@ -115,7 +115,7 @@ export default function TopBar() {
             icon={<IconAIFilledLevel1 />}
             onClick={() => setAiPanelOpen(true)}
           >
-            问馆员
+            问 Altas
           </Button>
         </Tooltip>
         )}
@@ -125,7 +125,7 @@ export default function TopBar() {
           position="bottomRight"
           render={
             <Dropdown.Menu>
-              <Dropdown.Item onClick={() => nav('/runs')}>馆员工单</Dropdown.Item>
+              <Dropdown.Item onClick={() => nav('/runs')}>Altas 工单</Dropdown.Item>
               <Dropdown.Item onClick={() => nav('/settings')}>设置</Dropdown.Item>
               <Dropdown.Item
                 icon={<IconSun size="small" />}

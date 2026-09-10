@@ -1,13 +1,13 @@
 import { useMemo, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
-import { Button, Dropdown, Empty, Modal, Spin, Tag, Toast, Tree } from '@douyinfe/semi-ui'
+import { Button, Dropdown, Empty, Modal, Spin, Toast, Tree } from '@douyinfe/semi-ui'
 import { IconFile, IconFolder, IconLock, IconMore, IconStar } from '@douyinfe/semi-icons'
 import type { ReactNode } from 'react'
 import type { WorkSummary } from '../../types'
 import { deleteWork, patchWork } from '../../lib/api'
 import { useAppStore } from '../../lib/store'
 import { folderPath, workPath, UNKNOWN_WORK_ID } from '../../lib/routes'
-import { STATUS_META, attachFolderRows, folderKey, folderKeyWorkId, isFolderKey } from '../../lib/tree'
+import { attachFolderRows, folderKey, folderKeyWorkId, isFolderKey } from '../../lib/tree'
 import type { TreeNodeData } from '../../lib/tree'
 import { CreateNodeModal, MoveNodeModal } from './WorkDialogs'
 import type { CreateTarget } from './WorkDialogs'
@@ -87,9 +87,11 @@ export default function WorkTree() {
     }
     const w = byId.get(key)
     if (!w) return _label
-    const status = STATUS_META[w.status]
     const pinned = pinnedIds.includes(w.id)
     const isPublic = w.visibility === 'public'
+    // 树上不再挂状态徽标（stub/draft/ready 逐行都是噪音）：
+    // 没有正文的节点只把标题压暗，其余状态在作品页与首页看。
+    const isEmptyStub = w.status === 'stub' && !w.hasContent
     return (
       <span className="tree-node" title={w.title}>
         {isPublic ? (
@@ -97,11 +99,8 @@ export default function WorkTree() {
         ) : (
           <IconLock size="small" className="tree-node-icon" />
         )}
-        <span className="tree-node-title">{w.title}</span>
+        <span className={`tree-node-title${isEmptyStub ? ' is-empty' : ''}`}>{w.title}</span>
         {pinned && <IconStar size="small" className="tree-node-pin" />}
-        <Tag color={status.color} size="small" className="tree-node-status">
-          {status.text}
-        </Tag>
         {me.authed && (
         <span className="tree-node-actions">
           <Dropdown
@@ -125,7 +124,7 @@ export default function WorkTree() {
                     nav(workPath(w.id, w.slug))
                   }}
                 >
-                  馆员建档
+                  Altas 建档
                 </Dropdown.Item>
                 <Dropdown.Item onClick={() => togglePin(w.id)}>
                   {pinned ? '取消置顶' : '置顶'}
@@ -167,7 +166,7 @@ export default function WorkTree() {
   if (nodes.length === 0) {
     return (
       <Empty
-        description="还没有作品。点上方「新建或置顶知识库」建一个宇宙，或让馆员建档。"
+        description="暂无作品"
         style={{ padding: 16 }}
       />
     )

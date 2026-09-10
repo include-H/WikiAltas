@@ -78,7 +78,7 @@ export default function WorkView() {
 
   const headings = useMemo(() => parseOutline(outlineMd), [outlineMd])
 
-  // "馆员正在写入"只在 content.staging 期间成立；提交后由 content.committed 清掉
+  // "Altas 正在写入"只在 content.staging 期间成立；提交后由 content.committed 清掉
   const aiWriting = useMemo(
     () => !!work && staging?.targetId === work.id,
     [staging, work],

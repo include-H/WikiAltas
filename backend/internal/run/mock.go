@@ -241,7 +241,7 @@ func mockMarkdown(goal string, intent domain.RunIntent, medium domain.Medium, sk
 		title = "未命名条目"
 	}
 	b.WriteString("# " + title + "\n\n")
-	b.WriteString("> 说明：P0/P2 mock 馆员生成的演示稿。配置 `WIKIATLAS_LLM_API_KEY` 后将调用真实模型并按 skill 写作。\n")
+	b.WriteString("> 说明：mock Altas 生成的演示稿。配置 `WIKIATLAS_LLM_API_KEY` 后将调用真实模型并按 skill 写作。\n")
 	if len(skillNames) > 0 {
 		b.WriteString("> 已参考 skill：" + strings.Join(skillNames, "、") + "。\n")
 	}
@@ -254,7 +254,7 @@ func mockMarkdown(goal string, intent domain.RunIntent, medium domain.Medium, sk
 		return b.String()
 	}
 
-	b.WriteString("## 1. 作品概览\n\n本条目由 WikiAltas 馆员工单自动写入，用于验证 SSE 推送与 revision 落库。介质：" + string(medium) + "。\n\n")
+	b.WriteString("## 1. 作品概览\n\n本条目由 Altas 工单自动写入，用于验证 SSE 推送与 revision 落库。介质：" + string(medium) + "。\n\n")
 	b.WriteString("## 2. 基础信息速览\n\n### 2.1 基本资料\n\n- 原名：待核实\n- 首发日期：待核实\n- 首发平台：待核实\n\n### 2.2 版本关系\n\n- 版本关系：待核实\n\n### 2.3 核心卖点\n\n- 结构演示，非真实卖点\n\n### 2.4 关键词\n\n- 待核实\n\n")
 	b.WriteString("## 3. 故事背景与设定\n\n背景设定演示段落。查不到的事实一律标「待核实」。\n\n")
 	b.WriteString("## 4. 剧情概要\n\n### 4.1 开端\n\n演示性开端描述，真实条目应按作品结构分节写到结局。\n\n### 4.2 转折\n\n演示性转折。\n\n### 4.3 结局\n\n演示性结局。\n\n")

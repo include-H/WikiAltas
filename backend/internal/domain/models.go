@@ -357,7 +357,7 @@ type RunContext struct {
 	Medium   *Medium `json:"medium"`
 	Section  *string `json:"section"`
 	// DocMode 是发起工单时用户所处的文档模式：read | edit | revision。
-	// 它决定馆员的作业方式（只读=只分析不改、编辑=直接改、修订=定点改+给理由）。
+	// 它决定 Altas 的作业方式（只读=只分析不改、编辑=直接改、修订=定点改+给理由）。
 	DocMode *string `json:"docMode"`
 	// Selection 是用户在正文里选中的文本（修订模式的作用域，对齐飞书「选定内容」）。
 	Selection *string        `json:"selection"`
@@ -365,7 +365,7 @@ type RunContext struct {
 }
 
 // CreateBatchBody is POST /api/runs/batch —— 批量建档（Emby/Komga/GameAtlas
-// 扫出来的一堆 stub，一键让馆员逐个写）。
+// 扫出来的一堆 stub，一键让 Altas 逐个写）。
 // 不新建表：一个批次 = 一个共享 workspace（batch:<id>）+ N 个子工单。
 type CreateBatchBody struct {
 	WorkIDs   []string `json:"workIds"`

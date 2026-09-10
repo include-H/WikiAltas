@@ -128,7 +128,7 @@ export function CreateNodeModal({
       )}
       <div className="dialog-hint">
         宇宙 / 系列 / 单作都可以挂资料夹（非标文件、解析稿）；单作建议选对介质，
-        馆员会据此加载对应写作规范。
+        Altas 会据此加载写作规范
       </div>
     </Modal>
   )

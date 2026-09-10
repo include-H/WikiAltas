@@ -196,7 +196,7 @@ func (s *Server) handleRuntime(w http.ResponseWriter, _ *http.Request) {
 		"features": []string{
 			"阅读：宇宙树 / 大纲 / 正文（题记·说明块·九章）",
 			"写作：编辑态 Markdown（BlockNote）+ 飞书三态（编辑 / 修订 / 只读）",
-			"馆员：Run + 工具面（站内检索 / 联网核实 / 按章写入）+ 折叠叙事流",
+			"Altas：Run + 工具面（站内检索 / 联网核实 / 按章写入）+ 折叠叙事流",
 			"资料夹：系列资料列表，长文可按节写入并关联本系列单作",
 			"批次：一键批量建档（worker 池并发执行）",
 			"版本：每次写入成 revision，可回滚；修订可逐条接受/拒绝",

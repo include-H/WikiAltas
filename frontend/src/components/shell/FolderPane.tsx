@@ -114,7 +114,7 @@ export default function FolderPane({ workId }: { workId: string }) {
           <Spin style={{ display: 'block', margin: '24px auto' }} />
         ) : docs.length === 0 ? (
           <Empty
-            description="资料夹为空。放解析、设定稿这类非标资料。"
+            description="暂无资料"
             style={{ padding: 16 }}
           />
         ) : (

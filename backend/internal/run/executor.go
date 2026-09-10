@@ -197,7 +197,7 @@ func (m *Manager) executeLLM(ctx context.Context, runID string, intent domain.Ru
 			if docMode == "read" && writeToolNames[name] {
 				out, _ := json.Marshal(map[string]any{
 					"ok":      false,
-					"message": "当前文档处于只读模式：用户只是让馆员「看」。请用 answer / narrative 给出分析与建议，不要修改正文。",
+					"message": "当前文档处于只读模式：用户只是让 Altas「看」。请用 answer / narrative 给出分析与建议，不要修改正文。",
 				})
 				messages = append(messages, llm.Message{Role: "tool", ToolCallID: tc.ID, Name: name, Content: string(out)})
 				m.emit(runID, "tool.done", map[string]any{
@@ -454,7 +454,7 @@ func buildToolDefs() []llm.ToolDef {
 
 func buildInitialMessages(intent domain.RunIntent, goal string, ctxMap map[string]any, skillFiles []skill.File, medium domain.Medium, workID, docID, docMode, brief string) []llm.Message {
 	var sys strings.Builder
-	sys.WriteString("你是 WikiAltas 馆员，为个人媒体库撰写中文百科条目。严格遵守以下规则：\n")
+	sys.WriteString("你是 WikiAltas 的 Altas，为个人媒体库撰写中文百科条目。严格遵守以下规则：\n")
 	sys.WriteString("1. 使用工具完成检索与写入；不要在回复里倾倒思考过程（CoT）。\n")
 	sys.WriteString("2. narrative 是你对用户说的话：一次一句中文，≤40 字，只说\"打算做什么/已确认什么\"，" +
 		"不写思考草稿、不复述工具参数。用户看到的就是这些句子。\n")
@@ -482,7 +482,7 @@ func buildInitialMessages(intent domain.RunIntent, goal string, ctxMap map[strin
 	sys.WriteString("   · 第 9 章参考资料列出**你实际用过的来源**，≥5 条（带链接或来源名）；\n")
 	sys.WriteString("   · 同一章最多改 2 次：还想改就把不确定处标「待核实」，然后继续下一章。\n")
 
-	// 用户打开文档时的模式决定馆员的作业方式（面板会把当前模式一起发过来）
+	// 用户打开文档时的模式决定 Altas 的作业方式（面板会把当前模式一起发过来）
 	sys.WriteString("\n=== 当前文档模式（决定你怎么干活）===\n")
 	switch docMode {
 	case "read":

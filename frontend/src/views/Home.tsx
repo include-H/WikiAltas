@@ -69,7 +69,7 @@ export default function Home() {
     }
   }
 
-  const row = (n: WorkSummary, pinnedRow = false) => {
+  const row = (n: WorkSummary, pinnedRow = false, showStatus = true) => {
     const path = ancestorPath(nodes, n.id)
       .slice(0, -1)
       .map((p) => p.title)
@@ -86,9 +86,11 @@ export default function Home() {
           <span className="doc-row-title">{n.title}</span>
           {path && <span className="doc-row-path">{path}</span>}
         </div>
-        <Tag size="small" color={status.color} className="doc-row-status">
-          {status.text}
-        </Tag>
+        {showStatus && n.status !== 'stub' && (
+          <Tag size="small" color={status.color} className="doc-row-status">
+            {status.label}
+          </Tag>
+        )}
         <span className="doc-row-time">{relativeTime(n.updatedAt)}</span>
       </List.Item>
     )
@@ -143,7 +145,7 @@ export default function Home() {
       )}
 
       {pinned.length > 0 && section('置顶', pinned, '', true)}
-      {section('最近作品', recent, '还没有作品。新建一个宇宙，或直接让右下角馆员建档。')}
+      {section('最近作品', recent, '暂无作品')}
       {me.authed && stubs.length > 0 && (
         <section className="home-section">
           <div className="home-section-head">
@@ -164,7 +166,7 @@ export default function Home() {
             dataSource={stubs}
             split={false}
             className="doc-list"
-            renderItem={(n) => row(n)}
+            renderItem={(n) => row(n, false, false)}
           />
         </section>
       )}
@@ -175,7 +177,7 @@ export default function Home() {
           进行中工单
         </Title>
         {running.length === 0 ? (
-          <div className="home-empty">没有进行中的馆员工单。</div>
+          <div className="home-empty">暂无进行中的工单</div>
         ) : (
           <List<Run>
             dataSource={running}
@@ -227,7 +229,7 @@ export default function Home() {
           />
         </div>
         <div className="dialog-hint">
-          待建档共 {stubs.length} 部。馆员并发 2 部，逐部按 9 章骨架撰写并落库；
+          待建档 {stubs.length} 部。Altas 并发 2 部，按 9 章骨架撰写并落库；
           面板顶部的批次卡可以看进度、暂停或单条继续。
         </div>
       </Modal>

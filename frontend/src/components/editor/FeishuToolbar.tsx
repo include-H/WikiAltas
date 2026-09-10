@@ -1,20 +1,25 @@
 import { useState } from 'react'
-import { Button, Divider, Input, Modal, Tooltip } from '@douyinfe/semi-ui'
+import { Button, Divider, Input, Modal, Toast, Tooltip } from '@douyinfe/semi-ui'
 import {
+  IconAIFilledLevel1,
   IconBold,
   IconCode,
+  IconComment,
   IconH1,
   IconH2,
   IconH3,
   IconItalic,
+  IconLanguage,
   IconLink,
   IconList,
   IconOrderedList,
   IconQuote,
+  IconStrikeThrough,
   IconText,
   IconUnderline,
 } from '@douyinfe/semi-icons'
 import { FormattingToolbar, useBlockNoteEditor, useEditorState } from '@blocknote/react'
+import { useAppStore } from '../../lib/store'
 
 type BlockLike = { type: string; props?: Record<string, unknown> }
 
@@ -47,6 +52,7 @@ function TbButton({
 
 export default function FeishuToolbar() {
   const editor = useBlockNoteEditor()
+  const { askSelection } = useAppStore()
   const [linkOpen, setLinkOpen] = useState(false)
   const [linkUrl, setLinkUrl] = useState('')
 
@@ -82,9 +88,38 @@ export default function FeishuToolbar() {
     setLinkUrl('')
   }
 
+  /**
+   * 飞书式 AI 动作：选段先交给 AI 面板。
+   * 「问 Altas」只挂上选段等用户提问；「翻译 / 解释」把说法一起发出去（= 飞书点「翻译」）。
+   */
+  const ask = (prompt: string, autoSend: boolean) => {
+    const text = editor.getSelectedText().trim()
+    if (!text) {
+      Toast.info('先选中一段正文')
+      return
+    }
+    askSelection({ selection: text, prompt, autoSend })
+  }
+
   return (
     <>
       <FormattingToolbar>
+        <TbButton
+          icon={<IconAIFilledLevel1 />}
+          label="问 Altas（@ 选段）"
+          onClick={() => ask('', false)}
+        />
+        <TbButton
+          icon={<IconLanguage />}
+          label="翻译这段"
+          onClick={() => ask('翻译这段', true)}
+        />
+        <TbButton
+          icon={<IconComment />}
+          label="解释这段"
+          onClick={() => ask('解释这段', true)}
+        />
+        <Divider layout="vertical" margin="4px" />
         <TbButton
           icon={<IconH1 />}
           label="一级标题"
@@ -154,10 +189,25 @@ export default function FeishuToolbar() {
           onClick={() => toggle('underline')}
         />
         <TbButton
+          icon={<IconStrikeThrough />}
+          label="删除线"
+          active={!!styles.strike}
+          onClick={() => toggle('strike')}
+        />
+        <TbButton
           icon={<IconCode />}
           label="行内代码"
           active={!!styles.code}
           onClick={() => toggle('code')}
+        />
+        <TbButton
+          icon={<span className="tb-swatch" />}
+          label="高亮"
+          active={!!styles.backgroundColor}
+          onClick={() => {
+            editor.toggleStyles({ backgroundColor: 'yellow' } as never)
+            editor.focus()
+          }}
         />
         <TbButton
           icon={<IconLink />}

@@ -4,7 +4,6 @@ import { Banner, Button, Card, Input, Toast, Typography } from '@douyinfe/semi-u
 import { IconEyeClosed, IconEyeOpened, IconLock } from '@douyinfe/semi-icons'
 import { login } from '../lib/api'
 import { useAppStore } from '../lib/store'
-import LoginCharacters from '../components/login/LoginCharacters'
 
 const { Title, Text } = Typography
 
@@ -18,21 +17,17 @@ export default function LoginView() {
   const [password, setPassword] = useState('')
   const [show, setShow] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState(false)
-  const [remaining] = useState<number | null>(null)
   const [lockedFor, setLockedFor] = useState<number | null>(null)
 
   const submit = async () => {
     if (!password) return
     setBusy(true)
-    setError(false)
     try {
       await login(password)
       await refreshMe()
       Toast.success('已进入管理态')
       nav('/')
     } catch (e) {
-      setError(true)
       const msg = e instanceof Error ? e.message : '访问密码不正确'
       const locked = /尝试次数过多/.exec(msg)
       if (locked) {
@@ -48,16 +43,11 @@ export default function LoginView() {
   return (
     <div className="login-view">
       <Card className="login-card">
-        <LoginCharacters
-          passwordLength={password.length}
-          showPassword={show}
-          isError={error}
-        />
         <Title heading={4} style={{ margin: '0 0 4px', textAlign: 'center' }}>
           WikiAltas
         </Title>
         <Text type="tertiary" size="small" className="login-hint">
-          未登录可以自由阅读「公开」文档；输入访问密码后进入管理态（写、馆员、设置）。
+          访客可读公开文档，输入访问密码进入管理态。
         </Text>
 
         {meLoaded && !me.adminPasswordConfigured && (
@@ -65,7 +55,7 @@ export default function LoginView() {
             type="info"
             closeIcon={null}
             style={{ margin: '12px 0' }}
-            description="还没有设置访问密码：先在本机设置页设一个，之后就能用它进入管理态。"
+            description="尚未设置访问密码"
           />
         )}
 
@@ -92,11 +82,9 @@ export default function LoginView() {
           />
         </div>
 
-        {(remaining != null || lockedFor != null) && (
+        {lockedFor != null && (
           <Text type="tertiary" size="small">
-            {lockedFor != null
-              ? `尝试次数过多，请 ${Math.ceil(lockedFor / 60)} 分钟后再试`
-              : `剩余尝试次数：${remaining}`}
+            尝试次数过多，请 {Math.ceil(lockedFor / 60)} 分钟后再试
           </Text>
         )}
 
@@ -112,10 +100,10 @@ export default function LoginView() {
           进入管理态
         </Button>
         <Button theme="borderless" block style={{ marginTop: 8 }} onClick={() => nav('/')}>
-          以访客身份继续阅读
+          以访客身份浏览
         </Button>
         <Text type="tertiary" size="small" className="login-foot">
-          说明：这是一道「别让不该公开的东西被顺路看到」的软门槛，不用于保护敏感数据。
+          未登录只能读公开条目，私有条目完全不可见。
         </Text>
       </Card>
     </div>

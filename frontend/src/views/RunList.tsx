@@ -102,7 +102,7 @@ export default function RunList() {
     <div className="run-list-view">
       <div className="run-list-header">
         <Title heading={4} style={{ margin: 0 }}>
-          馆员工单
+          Altas 工单
         </Title>
         <Button onClick={() => void load()}>刷新</Button>
       </div>
@@ -192,7 +192,7 @@ export default function RunList() {
           </div>
           <AIChatDialogue
             chats={[buildDialogueMessage(events, selected)] as never}
-            roleConfig={{ assistant: { name: '馆员' } }}
+            roleConfig={{ assistant: { name: 'Altas' } }}
             mode="noBubble"
             showReset={false}
             renderDialogueContentItem={

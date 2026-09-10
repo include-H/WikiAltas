@@ -11,7 +11,7 @@ const { Text } = Typography
 
 const AUTHOR_LABEL: Record<string, string> = {
   human: '我',
-  llm: '馆员',
+  llm: 'Altas',
   import: '导入',
 }
 

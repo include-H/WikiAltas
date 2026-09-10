@@ -87,6 +87,12 @@ func (s *Store) SessionSecret() string {
 	return secret
 }
 
+// SessionFingerprint 跟访问密码绑定：改密码后所有旧会话自动失效。
+func (s *Store) SessionFingerprint() string {
+	sum := sha256.Sum256([]byte(s.GetSecret(secretAdminPassword)))
+	return hex.EncodeToString(sum[:8])
+}
+
 // IsPublicWork 便捷方法：节点对访客是否可见。
 func (s *Store) IsPublicWork(id string) bool {
 	ok, err := s.VisibleToGuests(id)

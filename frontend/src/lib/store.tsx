@@ -24,7 +24,7 @@ interface AppStore {
   contentStamp: number
   notifyContentCommitted: (targetId: string, version: number) => void
   lastCommitted: { targetId: string; version: number } | null
-  /** 馆员正在写入的正文（content.staging 投影，用于"正在写入"标记） */
+  /** Altas 正在写入的正文（content.staging 投影，用于"正在写入"标记） */
   staging: { targetId: string; targetType: string } | null
   setStaging: (v: { targetId: string; targetType: string } | null) => void
   /**
@@ -37,6 +37,16 @@ interface AppStore {
   /** 置顶的节点 id（首期本地存储，见 lib/pins.ts） */
   pinnedIds: string[]
   togglePin: (id: string) => void
+  /** 正文选区（正文工具栏与 AI 面板共用：Altas 要知道"改的是哪一段"） */
+  docSelection: string
+  setDocSelection: (text: string) => void
+  /**
+   * 正文工具栏发起的一次提问，由 AI 面板消费：
+   * prompt 为空 = 只把选段交给面板等用户提问；autoSend = 直接发出去（如「翻译这段」）。
+   */
+  ask: { prompt: string; autoSend: boolean } | null
+  askSelection: (opts: { selection: string; prompt?: string; autoSend?: boolean }) => void
+  clearAsk: () => void
   sidebarCollapsed: boolean
   setSidebarCollapsed: (v: boolean) => void
   /** 当前正在看的批次（批量建档）；面板顶部显示批次卡 */
@@ -65,6 +75,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [staging, setStaging] = useState<{ targetId: string; targetType: string } | null>(null)
   const [docMode, setDocMode] = useState<DocMode>('edit')
   const [pinnedIds, setPinnedIds] = useState<string[]>(() => readPins())
+  const [docSelection, setDocSelection] = useState('')
+  const [ask, setAsk] = useState<{ prompt: string; autoSend: boolean } | null>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [activeBatchId, setActiveBatchIdState] = useState<string | null>(() =>
     localStorage.getItem('wikiatlas.batch'),
@@ -87,6 +99,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return next
     })
   }, [])
+
+  const askSelection = useCallback(
+    ({ selection, prompt = '', autoSend = false }: { selection: string; prompt?: string; autoSend?: boolean }) => {
+      setDocSelection(selection)
+      setAsk({ prompt, autoSend })
+      setAiPanelOpen(true)
+    },
+    [],
+  )
+
+  const clearAsk = useCallback(() => setAsk(null), [])
 
   const refreshTree = useCallback(async () => {
     setTreeLoading(true)
@@ -161,6 +184,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setDocMode,
       pinnedIds,
       togglePin,
+      docSelection,
+      setDocSelection,
+      ask,
+      askSelection,
+      clearAsk,
       sidebarCollapsed,
       setSidebarCollapsed,
       activeBatchId,
@@ -184,6 +212,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       docMode,
       pinnedIds,
       togglePin,
+      docSelection,
+      ask,
+      askSelection,
+      clearAsk,
       sidebarCollapsed,
       activeBatchId,
       setActiveBatchId,

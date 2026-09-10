@@ -10,7 +10,7 @@ import (
 
 const batchMaxSize = 20
 
-// CreateBatch 把一批作品节点排成馆员工单。
+// CreateBatch 把一批作品节点排成 Altas 工单。
 //
 // 设计取舍：不新增表/不新增 intent —— 一个批次就是共享的
 // workspace（batch:<id>）+ 每个作品一个 create_wiki 工单；

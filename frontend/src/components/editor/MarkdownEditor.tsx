@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Avatar,
   Banner,
@@ -10,7 +10,6 @@ import {
 import { IconEdit, IconSave } from '@douyinfe/semi-icons'
 import { IconAIFilledLevel1 } from '@douyinfe/semi-icons'
 import type { PutContentBody, PutContentResult } from '../../types'
-import { parseOutline } from '../../lib/mdOutline'
 import { ensureLeadingH1, stripLeadingH1 } from '../../lib/docMarkdown'
 import { absoluteTime } from '../../lib/tree'
 import MarkdownPreview from './MarkdownPreview'
@@ -124,9 +123,7 @@ export default function MarkdownEditor({
     return () => window.removeEventListener('keydown', h)
   }, [save])
 
-  const headings = useMemo(() => parseOutline(draft), [draft])
-
-  // 编辑态与修订态本质是同一个编辑器（差别在馆员的作业方式，不在界面）；
+  // 编辑态与修订态本质是同一个编辑器（差别在 Altas 的作业方式，不在界面）；
   // 只读态才切成渲染视图。产品里没有 Markdown 源码模式。
   const showBlock = mode === 'edit'
   const showRead = mode === 'read'
@@ -182,7 +179,7 @@ export default function MarkdownEditor({
         <Banner
           type="warning"
           icon={<IconEdit />}
-          description="馆员正在写入…完成后正文会自动刷新。"
+          description="Altas 正在写入…完成后自动刷新"
           closeIcon={null}
           className="doc-writing-banner"
         />
@@ -212,12 +209,7 @@ export default function MarkdownEditor({
             {draft.trim() ? (
               <MarkdownPreview markdown={draft} />
             ) : (
-              <div className="preview-empty">
-                正文为空。可在编辑态编写，或唤起右下角馆员建档。
-                <div style={{ marginTop: 8, opacity: 0.6, fontSize: 12 }}>
-                  {headings.length > 0 ? `${headings.length} 个标题` : ''}
-                </div>
-              </div>
+              <div className="preview-empty">暂无正文</div>
             )}
           </div>
         )}

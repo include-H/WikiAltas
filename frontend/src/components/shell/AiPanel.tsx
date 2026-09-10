@@ -51,9 +51,9 @@ const SKILLS = [
 ]
 
 const MODE_HINT: Record<string, { label: string; tip: string }> = {
-  read: { label: '只读', tip: '馆员只做阅读、分析、评估与答疑，不会改动正文' },
-  edit: { label: '编辑', tip: '馆员直接改正文，改完即生效（可回滚）' },
-  revision: { label: '修订', tip: '馆员只做定点小改，每条都带理由，可在版本历史里逐条回滚' },
+  read: { label: '只读', tip: '只读不改：给分析、评估、答疑' },
+  edit: { label: '编辑', tip: '直接改正文，改完即生效（可回滚）' },
+  revision: { label: '修订', tip: '只做定点小改，每条带理由，逐条可回滚' },
 }
 
 export default function AiPanel({ workId, workTitle, docId }: Props) {
@@ -65,6 +65,10 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
     setStaging,
     nodes,
     docMode,
+    docSelection,
+    setDocSelection,
+    ask,
+    clearAsk,
   } = useAppStore()
   const nav = useNavigate()
   const loc = useLocation()
@@ -74,8 +78,8 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
   const [restoring, setRestoring] = useState(false)
   const sseRef = useRef<SseHandle | null>(null)
   const lastSeq = useRef(0)
-  // 用户在正文里的选区：点进面板输入框会丢掉 DOM 选区，所以先行捕获并保留
-  const [selection, setSelection] = useState('')
+  // 用户在正文里的选区存在 store 里：点进面板会丢掉 DOM 选区，正文工具栏也要用同一份
+  const selection = docSelection
 
   // 会话键：同一篇文档/首页共用一段对话，刷新或切文章后按它召回
   const workspace = useMemo(
@@ -134,11 +138,11 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
       const anchor = sel?.anchorNode
       const el = anchor instanceof Element ? anchor : anchor?.parentElement ?? null
       // 只认正文区的选区，避免把侧栏/面板里的文字当成修订范围
-      if (el?.closest('.work-view')) setSelection(text.slice(0, 2000))
+      if (el?.closest('.work-view')) setDocSelection(text.slice(0, 2000))
     }
     document.addEventListener('selectionchange', onSelectionChange)
     return () => document.removeEventListener('selectionchange', onSelectionChange)
-  }, [])
+  }, [setDocSelection])
 
   // 面板打开/切换文档时，把这段会话最近一个工单召回来（这就是"刷新即丢"的解药）
   useEffect(() => {
@@ -186,7 +190,7 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
       if (docId) context.docId = docId
       // 修订模式的作用域：用户在正文里选中的那段（对齐飞书「选定内容」）
       if (selection) context.selection = selection
-      // 把用户当前所处的模式发给馆员：只读=只分析、编辑=直接改、修订=定点改+给理由
+      // 把用户当前所处的模式发给 Altas：只读=只分析、编辑=直接改、修订=定点改+给理由
       const res = await createRun({
         intent,
         goal,
@@ -240,6 +244,23 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
   const canResume = !!run && (run.status === 'interrupted' || run.status === 'failed')
   const running = run?.status === 'running' || busy
 
+  // 正文工具栏的提问：问 Altas = 挂上选段等用户打字；翻译/解释 = 直接发出去
+  const sendRef = useRef(send)
+  sendRef.current = send
+  useEffect(() => {
+    if (!ask) return
+    const { prompt, autoSend } = ask
+    clearAsk()
+    if (autoSend && prompt) {
+      void sendRef.current(prompt)
+      return
+    }
+    window.requestAnimationFrame(() => {
+      const input = document.querySelector<HTMLElement>('.ai-panel .ProseMirror')
+      input?.focus()
+    })
+  }, [ask, clearAsk])
+
   // 事件流 → Semi 消息（阶段折叠交给 AIChatDialogue.Step，不再手搓）
   const chats = useMemo(() => {
     if (!run) return []
@@ -263,7 +284,7 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
             <IconAIFilledLevel1 />
           </span>
           <Title heading={6} style={{ margin: 0 }}>
-            馆员
+            Altas
           </Title>
           {workTitle && (
             <Text type="tertiary" size="small" ellipsis={{ showTooltip: true }}>
@@ -279,7 +300,7 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
           type="tertiary"
           icon={<IconClose />}
           size="small"
-          aria-label="收起馆员"
+          aria-label="收起 Altas"
           onClick={() => setAiPanelOpen(false)}
         />
       </div>
@@ -297,8 +318,8 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
             </Text>
             <Text type="tertiary" size="small">
               {workTitle
-                ? '可以直接说「重写第 4 章」「补一节玩法」，或切换顶栏模式改变馆员的干活方式。'
-                : '可以说「写《地平线：西之绝境》的 Wiki」，馆员会自己建档、检索、按 9 章撰写。'}
+                ? '说「重写第 4 章」「补一节玩法」，或切换顶栏模式。'
+                : '说「写《X》的 Wiki」，Altas 自己建档、检索、按 9 章写。'}
             </Text>
           </div>
         ) : restoring ? (
@@ -311,7 +332,7 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
           <>
             <AIChatDialogue
               chats={chats as never}
-              roleConfig={{ assistant: { name: '馆员' } }}
+              roleConfig={{ assistant: { name: 'Altas' } }}
               mode="noBubble"
               showReset={false}
               renderDialogueContentItem={dialogueRenderers as never}
@@ -334,7 +355,7 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
         {selection && (
           <div className="ai-selection-chip">
             <Tag size="small" color={docMode === 'revision' ? 'orange' : 'grey'}>
-              已选定 {selection.length} 字
+              已引用选段 {selection.length} 字
             </Tag>
             <Text type="tertiary" size="small" ellipsis={{ showTooltip: true }}>
               {selection.replace(/\s+/g, ' ').slice(0, 40)}
@@ -344,8 +365,8 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
               type="tertiary"
               size="small"
               icon={<IconClose />}
-              aria-label="取消选定"
-              onClick={() => setSelection('')}
+              aria-label="取消引用"
+              onClick={() => setDocSelection('')}
             />
           </div>
         )}

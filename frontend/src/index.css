@@ -519,86 +519,6 @@ body {
   opacity: 0.85;
 }
 
-/* 登录页小人（移植自 GameManager，颜色全部走 Semi token） */
-.login-characters {
-  display: flex;
-  justify-content: center;
-  padding: 6px 0 14px;
-}
-
-.login-characters-scene {
-  display: flex;
-  align-items: flex-end;
-  gap: 14px;
-  height: 78px;
-}
-
-.login-character {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--semi-border-radius-large);
-  transition: transform 0.25s ease, background 0.25s ease;
-}
-
-.login-character.tone-primary {
-  background: var(--semi-color-primary);
-}
-
-.login-character.tone-ink {
-  background: var(--semi-color-text-0);
-}
-
-.login-character.tone-amber {
-  background: var(--semi-color-warning);
-}
-
-.login-character.tone-green {
-  background: var(--semi-color-success);
-}
-
-.login-character-eyes {
-  display: flex;
-  gap: 8px;
-}
-
-.login-eye {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--semi-border-radius-circle);
-  background: var(--semi-color-bg-0);
-  overflow: hidden;
-  transition: height 0.12s ease;
-}
-
-.login-eye.is-blinking {
-  height: 2px;
-}
-
-.login-pupil {
-  border-radius: var(--semi-border-radius-circle);
-  background: var(--semi-color-text-0);
-  transition: transform 0.08s linear;
-}
-
-.login-character-hands {
-  width: 70%;
-  height: 8px;
-  border-radius: var(--semi-border-radius-full);
-  background: var(--semi-color-bg-0);
-  opacity: 0.9;
-}
-
-.login-characters.is-error .login-character {
-  transform: translateY(3px);
-}
-
-.login-characters.is-success .login-character {
-  transform: translateY(-3px);
-}
-
 .settings-view {
   flex: 1;
   overflow: auto;
@@ -1036,14 +956,14 @@ body {
   font-size: 13px;
 }
 
+/* 空 stub 不挂灰色徽标：标题压暗即可 */
+.tree-node-title.is-empty {
+  color: var(--semi-color-text-2);
+}
+
 .tree-node-pin {
   color: var(--semi-color-warning);
   flex-shrink: 0;
-}
-
-.tree-node-status {
-  flex-shrink: 0;
-  margin-left: 2px;
 }
 
 .tree-node-actions {
@@ -1454,6 +1374,21 @@ body {
 
 .doc-writing-banner {
   margin: 0 32px 8px;
+}
+
+/* 选区工具栏：AI 动作一排在最左（对齐飞书「问问豆包 / 解释」的位置） */
+.tb-btn.active {
+  color: var(--semi-color-primary);
+  background: var(--semi-color-primary-light-default);
+}
+
+.tb-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: rgba(var(--semi-yellow-4), 1);
+  box-shadow: inset 0 0 0 1px var(--semi-color-border);
 }
 
 /* ===== 题记：书页留白（对齐 GameManager 原始实现：无底色无边框） ===== */

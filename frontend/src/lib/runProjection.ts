@@ -223,7 +223,7 @@ export function projectRun(events: RunEvent[]): RunProjection {
         break
       }
       case 'content.staging': {
-        // 仅用于正文区的"馆员正在写入"标记（store.setStaging），不进叙事流：
+        // 仅用于正文区的"Altas 正在写入"标记（store.setStaging），不进叙事流：
         // 每次落库都占一行会变成刷屏（观测中出现了 23 行"开始写入正文…"）。
         break
       }

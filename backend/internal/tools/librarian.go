@@ -302,7 +302,7 @@ func NewLibrarianRegistry(d LibrarianDeps) *Registry {
 				})
 			}
 			if p.Summary == "" {
-				p.Summary = "馆员写入"
+				p.Summary = "Altas 写入"
 			}
 			qualityOK := true
 			var qualityIssues []string

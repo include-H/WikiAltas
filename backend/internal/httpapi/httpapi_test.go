@@ -578,7 +578,7 @@ func TestGetDocReturnsWrappedDoc(t *testing.T) {
 	}
 }
 
-// 工单要带上"用户所处的文档模式 + 正文选区"，馆员才能按模式与范围干活。
+// 工单要带上"用户所处的文档模式 + 正文选区"，Altas 才能按模式与范围干活。
 func TestCreateRunCarriesModeAndSelection(t *testing.T) {
 	ts, _ := newTestServer(t)
 	created := doJSON(t, "POST", ts.URL+"/api/runs", map[string]any{

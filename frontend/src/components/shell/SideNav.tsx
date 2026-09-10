@@ -79,7 +79,7 @@ export default function SideNav() {
         </Tooltip>
         )}
         {me.authed && (
-        <Tooltip content="馆员" position="right">
+        <Tooltip content="Altas" position="right">
           <Button
             theme="borderless"
             type="tertiary"

@@ -69,7 +69,7 @@ export default function PendingRevisions({
     void load()
   }, [load, contentStamp])
 
-  // 只挑"馆员在修订模式下写的"版本，且还没处理过
+  // 只挑"Altas 在修订模式下写的"版本，且还没处理过
   const pending = useMemo(
     () =>
       revisions.filter(
@@ -118,7 +118,7 @@ export default function PendingRevisions({
         className="pending-revisions"
         description={
           <span className="pending-rev-row">
-            <Text strong>馆员提了 {pending.length} 处修订</Text>
+            <Text strong>Altas 提了 {pending.length} 处修订</Text>
             <Text type="tertiary" size="small">
               逐条接受或拒绝（拒绝=回到改前版本）
             </Text>
