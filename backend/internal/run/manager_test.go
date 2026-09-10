@@ -365,6 +365,42 @@ func TestReadModeBlocksWrites(t *testing.T) {
 	}
 }
 
+// 同一会话的第二单必须带上上一单的结论，否则"接着聊"每轮都从零开始。
+func TestFollowUpRunCarriesPreviousSummary(t *testing.T) {
+	mgr, st := newManager(t)
+	ws := "work:demo"
+
+	first, err := mgr.CreateAndStart(domain.CreateRunBody{
+		Intent: domain.RunIntentAnswer, Goal: "先看看这篇稿子", Workspace: ws,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, st, first.ID, domain.RunStatusCompleted)
+
+	second, err := mgr.CreateAndStart(domain.CreateRunBody{
+		Intent: domain.RunIntentAnswer, Goal: "那第三章再补一句", Workspace: ws,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, st, second.ID, domain.RunStatusCompleted)
+
+	got, err := st.GetRun(second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, _ := got.Checkpoint["context"].(map[string]any)
+	prev, ok := ctx["previous"].([]any)
+	if !ok || len(prev) == 0 {
+		t.Fatalf("第二单没带上之前的工单: %+v", ctx)
+	}
+	first0, _ := prev[0].(map[string]any)
+	if first0["goal"] != "先看看这篇稿子" {
+		t.Fatalf("previous[0] = %+v", first0)
+	}
+}
+
 func TestResumeFromCheckpoint(t *testing.T) {
 	st, err := store.OpenMemory()
 	if err != nil {

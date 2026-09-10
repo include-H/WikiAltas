@@ -572,6 +572,14 @@ func buildInitialMessages(intent domain.RunIntent, goal string, ctxMap map[strin
 	if brief != "" {
 		user.WriteString(brief)
 	}
+	if prev, ok := ctxMap["previous"].([]map[string]any); ok && len(prev) > 0 {
+		user.WriteString("\n## 这段会话之前的工单（用户可能是在接着聊）\n")
+		for _, p := range prev {
+			fmt.Fprintf(&user, "· [%v] %v → %v\n", p["status"], p["goal"], p["summary"])
+		}
+		user.WriteString("如果这轮是追问或追加要求：先看现状（read_work / read_doc），" +
+			"不要重复上一单已经做过的检索；上一单没做完的部分接着做。\n")
+	}
 	user.WriteString("\n请先用 read_skill（如需更多 skill 细节）、search_works、search_web 核实信息，")
 	user.WriteString("再 update_plan 更新计划，用 narrative 播报进度，最后 write_content 写入正文并结束。\n")
 

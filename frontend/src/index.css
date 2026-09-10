@@ -1049,6 +1049,39 @@ body {
   flex-wrap: wrap;
 }
 
+/* 待确认的修订（修订模式产物） */
+.pending-revisions {
+  margin: 8px 32px 0;
+}
+
+.pending-rev-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pending-rev-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--semi-color-border);
+}
+
+.pending-rev-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.pending-rev-reason {
+  font-size: 13px;
+  color: var(--semi-color-text-0);
+}
+
 .doc-links {
   display: inline-flex;
   align-items: center;

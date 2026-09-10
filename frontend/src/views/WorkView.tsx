@@ -8,6 +8,7 @@ import { workPath } from '../lib/routes'
 import OutlinePane from '../components/shell/OutlinePane'
 import MarkdownEditor from '../components/editor/MarkdownEditor'
 import DocActions from '../components/editor/DocActions'
+import PendingRevisions from '../components/editor/PendingRevisions'
 import { parseOutline } from '../lib/mdOutline'
 
 const { Text } = Typography
@@ -147,6 +148,7 @@ export default function WorkView() {
         contentKey={`${work.contentVer}:${outlineMd.length}`}
       />
       <div className="work-content">
+        <PendingRevisions workId={work.id} onReload={load} />
         <MarkdownEditor
           key={work.id}
           title={work.title}

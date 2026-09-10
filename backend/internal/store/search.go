@@ -46,7 +46,7 @@ func (s *Store) searchFTS(match, kind string, limit int) ([]domain.SearchHit, er
 	if kind == "" || kind == "work" {
 		rows, err := s.DB.Query(`
 			SELECT w.id, w.title, w.slug,
-			       snippet(works_fts, 1, '«', '»', '…', 12)
+			       COALESCE(snippet(works_fts, -1, '«', '»', '…', 12), '')
 			FROM works_fts
 			JOIN works w ON w.rowid = works_fts.rowid
 			WHERE works_fts MATCH ?
@@ -73,7 +73,7 @@ func (s *Store) searchFTS(match, kind string, limit int) ([]domain.SearchHit, er
 	if kind == "" || kind == "doc" {
 		rows, err := s.DB.Query(`
 			SELECT d.id, d.title, d.slug,
-			       snippet(docs_fts, 1, '«', '»', '…', 12)
+			       COALESCE(snippet(docs_fts, -1, '«', '»', '…', 12), '')
 			FROM docs_fts
 			JOIN docs d ON d.rowid = docs_fts.rowid
 			WHERE docs_fts MATCH ?

@@ -245,6 +245,42 @@ func TestSearchFTS(t *testing.T) {
 	}
 }
 
+// 别名必须能被检索到：search_works 声称"按标题/别名/正文检索"，
+// 早期实现只把 title/content 灌进 FTS，FF7R 这类别名搜不到。
+func TestSearchFindsAliases(t *testing.T) {
+	s := newTestStore(t)
+	w, err := s.CreateWork(domain.CreateWorkBody{
+		Kind: domain.WorkKindWork, Title: "最终幻想VII 重制版",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliases := []string{"FF7R", "FFVII Remake", "Final Fantasy VII Remake"}
+	if _, err := s.PatchWork(w.ID, domain.PatchWorkBody{Aliases: &aliases}); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{"FF7R", "Remake"} {
+		hits, err := s.Search(q, "work", 10)
+		if err != nil {
+			t.Fatalf("Search(%s): %v", q, err)
+		}
+		found := false
+		for _, h := range hits {
+			if h.ID == w.ID {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("别名 %q 没检索到: %+v", q, hits)
+		}
+	}
+	// 命中别名时 snippet 不该为 NULL（否则 Scan 报错会静默回退到 LIKE）
+	hits, _ := s.Search("FF7R", "work", 10)
+	if len(hits) == 0 || hits[0].Snippet == "" {
+		t.Fatalf("别名命中缺少 snippet: %+v", hits)
+	}
+}
+
 func TestDocCRUDAndContent(t *testing.T) {
 	s := newTestStore(t)
 	w, err := s.CreateWork(domain.CreateWorkBody{Kind: domain.WorkKindWork, Title: "Work"})

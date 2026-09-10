@@ -195,35 +195,69 @@ CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, seq);
 
 	// FTS5 virtual tables. trigram tokenizer supports CJK without external segmenters.
 	// External-content pattern keeps a single source of truth in works/docs.
+	//
+	// 迁移：早期版本只索引 title/content，别名（aliases_json）没进索引，
+	// 导致 search_works 声称"按别名检索"却搜不到（如 FF7R）。这里检测表定义，
+	// 缺 aliases 列就重建 FTS 表与触发器并 rebuild（FTS 是派生数据，重建安全）。
+	var ftsSQL string
+	if err := s.DB.QueryRow(
+		`SELECT COALESCE(sql, '') FROM sqlite_master WHERE type = 'table' AND name = 'works_fts'`,
+	).Scan(&ftsSQL); err != nil {
+		ftsSQL = ""
+	}
+	ftsExisted := ftsSQL != ""
+	// 早期版本把 FTS 列名写成 content / aliases，而外部内容表要求列名与 works 一致
+	// （works.content_md / works.aliases_json），导致 FTS 查询报错并静默回退到 LIKE。
+	migrated := ftsExisted && !strings.Contains(ftsSQL, "aliases_json")
+	if migrated {
+		for _, stmt := range []string{
+			`DROP TABLE IF EXISTS works_fts`,
+			`DROP TABLE IF EXISTS docs_fts`,
+			`DROP TRIGGER IF EXISTS works_ai`,
+			`DROP TRIGGER IF EXISTS works_ad`,
+			`DROP TRIGGER IF EXISTS works_au`,
+			`DROP TRIGGER IF EXISTS docs_ai`,
+			`DROP TRIGGER IF EXISTS docs_ad`,
+			`DROP TRIGGER IF EXISTS docs_au`,
+		} {
+			if _, err := s.DB.Exec(stmt); err != nil {
+				return fmt.Errorf("migrate fts: %w", err)
+			}
+		}
+	}
 	fts := `
 CREATE VIRTUAL TABLE IF NOT EXISTS works_fts USING fts5(
-  title, content, content='works', content_rowid='rowid', tokenize='trigram'
+  title, content_md, aliases_json, content='works', content_rowid='rowid', tokenize='trigram'
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
-  title, content, content='docs', content_rowid='rowid', tokenize='trigram'
+  title, content_md, content='docs', content_rowid='rowid', tokenize='trigram'
 );
 
 CREATE TRIGGER IF NOT EXISTS works_ai AFTER INSERT ON works BEGIN
-  INSERT INTO works_fts(rowid, title, content) VALUES (new.rowid, new.title, COALESCE(new.content_md,''));
+  INSERT INTO works_fts(rowid, title, content_md, aliases_json)
+    VALUES (new.rowid, new.title, COALESCE(new.content_md,''), COALESCE(new.aliases_json,'[]'));
 END;
 CREATE TRIGGER IF NOT EXISTS works_ad AFTER DELETE ON works BEGIN
-  INSERT INTO works_fts(works_fts, rowid, title, content) VALUES ('delete', old.rowid, old.title, COALESCE(old.content_md,''));
+  INSERT INTO works_fts(works_fts, rowid, title, content_md, aliases_json)
+    VALUES ('delete', old.rowid, old.title, COALESCE(old.content_md,''), COALESCE(old.aliases_json,'[]'));
 END;
 CREATE TRIGGER IF NOT EXISTS works_au AFTER UPDATE ON works BEGIN
-  INSERT INTO works_fts(works_fts, rowid, title, content) VALUES ('delete', old.rowid, old.title, COALESCE(old.content_md,''));
-  INSERT INTO works_fts(rowid, title, content) VALUES (new.rowid, new.title, COALESCE(new.content_md,''));
+  INSERT INTO works_fts(works_fts, rowid, title, content_md, aliases_json)
+    VALUES ('delete', old.rowid, old.title, COALESCE(old.content_md,''), COALESCE(old.aliases_json,'[]'));
+  INSERT INTO works_fts(rowid, title, content_md, aliases_json)
+    VALUES (new.rowid, new.title, COALESCE(new.content_md,''), COALESCE(new.aliases_json,'[]'));
 END;
 
 CREATE TRIGGER IF NOT EXISTS docs_ai AFTER INSERT ON docs BEGIN
-  INSERT INTO docs_fts(rowid, title, content) VALUES (new.rowid, new.title, new.content_md);
+  INSERT INTO docs_fts(rowid, title, content_md) VALUES (new.rowid, new.title, new.content_md);
 END;
 CREATE TRIGGER IF NOT EXISTS docs_ad AFTER DELETE ON docs BEGIN
-  INSERT INTO docs_fts(docs_fts, rowid, title, content) VALUES ('delete', old.rowid, old.title, old.content_md);
+  INSERT INTO docs_fts(docs_fts, rowid, title, content_md) VALUES ('delete', old.rowid, old.title, old.content_md);
 END;
 CREATE TRIGGER IF NOT EXISTS docs_au AFTER UPDATE ON docs BEGIN
-  INSERT INTO docs_fts(docs_fts, rowid, title, content) VALUES ('delete', old.rowid, old.title, old.content_md);
-  INSERT INTO docs_fts(rowid, title, content) VALUES (new.rowid, new.title, new.content_md);
+  INSERT INTO docs_fts(docs_fts, rowid, title, content_md) VALUES ('delete', old.rowid, old.title, old.content_md);
+  INSERT INTO docs_fts(rowid, title, content_md) VALUES (new.rowid, new.title, new.content_md);
 END;
 `
 	if _, err := s.DB.Exec(fts); err != nil {
@@ -231,6 +265,20 @@ END;
 		ftsFallback := strings.ReplaceAll(fts, ", tokenize='trigram'", "")
 		if _, err2 := s.DB.Exec(ftsFallback); err2 != nil {
 			return fmt.Errorf("apply fts: %v (fallback: %w)", err, err2)
+		}
+	}
+	// 首次建表或刚做过 aliases 迁移时灌一次数据。
+	// 注意不能用 FTS5 的 'rebuild'（外部内容表要求列名与 works 相同，我们用的是 content_md/aliases_json）。
+	if !ftsExisted || migrated {
+		if _, err := s.DB.Exec(`
+			INSERT INTO works_fts(rowid, title, content_md, aliases_json)
+			SELECT rowid, title, COALESCE(content_md, ''), COALESCE(aliases_json, '[]') FROM works`); err != nil {
+			return fmt.Errorf("index works_fts: %w", err)
+		}
+		if _, err := s.DB.Exec(`
+			INSERT INTO docs_fts(rowid, title, content_md)
+			SELECT rowid, title, COALESCE(content_md, '') FROM docs`); err != nil {
+			return fmt.Errorf("index docs_fts: %w", err)
 		}
 	}
 

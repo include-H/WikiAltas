@@ -279,6 +279,34 @@ func (m *Manager) CreateAndStart(body domain.CreateRunBody) (*domain.Run, error)
 			ctxMap["extra"] = body.Context.Extra
 		}
 	}
+	// 同一段会话里最近的工单：带上结论，用户才能"接着聊"
+	// （否则每条新消息都从零开始，上一单查到啥、改了啥全不知道。）
+	if body.Workspace != "" {
+		if prev, err := m.store.ListRuns("", body.Workspace, 5); err == nil {
+			briefs := make([]map[string]any, 0, 3)
+			for _, p := range prev {
+				if p.ID == r.ID || p.Status == domain.RunStatusRunning {
+					continue
+				}
+				summary := ""
+				if p.Result != nil {
+					if s, ok := p.Result["summary"].(string); ok {
+						summary = s
+					}
+				}
+				briefs = append(briefs, map[string]any{
+					"intent": string(p.Intent), "goal": p.Goal,
+					"status": string(p.Status), "summary": summary,
+				})
+				if len(briefs) >= 2 {
+					break
+				}
+			}
+			if len(briefs) > 0 {
+				ctxMap["previous"] = briefs
+			}
+		}
+	}
 	plan := []domain.RunTask{
 		{ID: "t1", Title: "理解目标", Status: "in_progress"},
 		{ID: "t2", Title: "检索资料", Status: "pending"},
