@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Button, Progress, Tag, Toast, Typography } from '@douyinfe/semi-ui'
 import { IconClose, IconRefresh } from '@douyinfe/semi-icons'
 import type { Run, RunStatus } from '../../types'
-import { cancelRun, listRuns } from '../../lib/api'
+import { cancelRun, getRuntime, listRuns } from '../../lib/api'
 import { useAppStore } from '../../lib/store'
 import { workPath } from '../../lib/routes'
 
@@ -27,6 +27,11 @@ export default function BatchCard() {
   const { activeBatchId, setActiveBatchId } = useAppStore()
   const [runs, setRuns] = useState<Run[]>([])
   const [loading, setLoading] = useState(false)
+  const [live, setLive] = useState<{ active: number; queued: number; limit: number }>({
+    active: 0,
+    queued: 0,
+    limit: 2,
+  })
   const nav = useNavigate()
 
   const load = useCallback(async () => {
@@ -35,6 +40,8 @@ export default function BatchCard() {
     try {
       const res = await listRuns(undefined, 200, `batch:${activeBatchId}`)
       setRuns(res.runs ?? [])
+      const rt = await getRuntime().catch(() => null)
+      if (rt) setLive({ active: rt.activeRuns, queued: rt.queuedRuns, limit: rt.maxConcurrentRuns })
     } catch {
       setRuns([])
     } finally {
@@ -128,7 +135,7 @@ export default function BatchCard() {
 
       <footer className="batch-card-foot">
         <Text type="tertiary" size="small">
-          并发 2 部/批 · 队列中 {queued} 部
+          执行中 {live.active}/{live.limit} · 排队 {live.queued} · 本批 待处理 {queued}
         </Text>
         {queued > 0 && (
           <Button size="small" theme="borderless" type="tertiary" onClick={() => void stopAll()}>

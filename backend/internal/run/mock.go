@@ -46,9 +46,9 @@ func (m *Manager) executeMock(ctx context.Context, runID string, intent domain.R
 			time.Sleep(20 * time.Millisecond)
 			if skillOK {
 				m.emit(runID, "tool.done", map[string]any{
-					"name":         "read_skill",
+					"name":          "read_skill",
 					"outputSummary": "已加载 " + strings.Join(skillNames, " + "),
-					"durationMs":   20,
+					"durationMs":    20,
 				})
 			} else {
 				m.emit(runID, "tool.done", map[string]any{
@@ -105,7 +105,7 @@ func (m *Manager) executeMock(ctx context.Context, runID string, intent domain.R
 				targetType, targetID = "doc", docID
 			}
 			m.emit(runID, "tool.started", map[string]any{
-				"name": "write_content",
+				"name":         "write_content",
 				"inputSummary": fmt.Sprintf("target=%s:%s len=%d", targetType, targetID, len([]rune(md))),
 			})
 			m.emit(runID, "content.staging", map[string]any{

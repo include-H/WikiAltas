@@ -24,8 +24,8 @@ func (s *Store) ListRevisions(targetType, targetID string, limit int, includeCon
 	out := make([]domain.Revision, 0)
 	for rows.Next() {
 		var (
-			r      domain.Revision
-			runID  sql.NullString
+			r     domain.Revision
+			runID sql.NullString
 		)
 		if includeContent {
 			if err := rows.Scan(&r.ID, &r.TargetType, &r.TargetID, &r.Version, &r.Author, &runID, &r.Summary, &r.CreatedAt, &r.ContentMd); err != nil {

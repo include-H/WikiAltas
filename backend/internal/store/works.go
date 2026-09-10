@@ -143,6 +143,14 @@ func (s *Store) PatchWork(id string, body domain.PatchWorkBody) (*domain.Work, e
 			if n == 0 {
 				return nil, ErrValidation{Message: "parent not found"}
 			}
+			// 禁止把节点移到自己的子树里（否则树会成环，UI 与工具都会迷路）
+			isDescendant, err := s.isDescendantOf(*body.ParentID, id)
+			if err != nil {
+				return nil, err
+			}
+			if isDescendant {
+				return nil, ErrValidation{Message: "cannot move a node into its own subtree"}
+			}
 		}
 		var parent any
 		if *body.ParentID != "" {

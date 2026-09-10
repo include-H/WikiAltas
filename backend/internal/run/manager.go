@@ -32,9 +32,10 @@ type Manager struct {
 
 	// 工单队列：所有 Run（含批量建档）都排在队列里，由固定数量的 worker
 	// 逐个执行，避免一次同步 50 部作品就并发打 50 路 LLM。
-	queue         chan func()
-	maxConcurrent int
-	workersOnce   sync.Once
+	queue                chan func()
+	maxConcurrentDefault int
+	inFlight             int
+	workersOnce          sync.Once
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -50,18 +51,18 @@ func NewManager(st *store.Store, client llm.Client) *Manager {
 		}
 	}
 	return &Manager{
-		store:         st,
-		registry:      tools.DefaultRegistry(),
-		client:        client,
-		subscribers:   map[string]map[chan domain.RunEvent]struct{}{},
-		cancelers:     map[string]context.CancelFunc{},
-		queue:         make(chan func(), 256),
-		maxConcurrent: maxConcurrentRuns(),
-		stopCh:        make(chan struct{}),
+		store:                st,
+		registry:             tools.DefaultRegistry(),
+		client:               client,
+		subscribers:          map[string]map[chan domain.RunEvent]struct{}{},
+		cancelers:            map[string]context.CancelFunc{},
+		queue:                make(chan func(), 256),
+		maxConcurrentDefault: maxConcurrentRuns(),
+		stopCh:               make(chan struct{}),
 	}
 }
 
-// maxConcurrentRuns 是同时执行的工单数上限（默认 2，可用环境变量覆盖）。
+// maxConcurrentRuns 是环境变量给出的默认并发上限（设置页会覆盖它）。
 func maxConcurrentRuns() int {
 	if v := strings.TrimSpace(os.Getenv("WIKIATLAS_MAX_CONCURRENT_RUNS")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 16 {
@@ -115,9 +116,7 @@ func (m *Manager) activeClient() llm.Client {
 			return m.client
 		}
 	}
-	if cfg, ok := llm.ConfigFromEnv(); ok {
-		return llm.NewOpenAIClient(cfg)
-	}
+	// 设置页（SQLite）优先：用户在 UI 改完模型配置，下一次工单立刻生效（热重载）。
 	if key := m.store.GetAPIKey(); key != "" {
 		st, err := m.store.GetSettings()
 		if err == nil {
@@ -137,7 +136,41 @@ func (m *Manager) activeClient() llm.Client {
 			return llm.NewOpenAIClient(cfg)
 		}
 	}
+	// 没有落库配置时退回环境变量
+	if cfg, ok := llm.ConfigFromEnv(); ok {
+		return llm.NewOpenAIClient(cfg)
+	}
 	return m.client
+}
+
+// exaKey 读设置页里的 Exa key（env 兜底）——改完即对下一个工单生效。
+func (m *Manager) exaKey() string {
+	return m.store.ExaAPIKey()
+}
+
+// ActiveClient 供设置页「测试连接」使用（与工单实际用的是同一套解析逻辑）。
+func (m *Manager) ActiveClient() llm.Client {
+	return m.activeClient()
+}
+
+// ActiveCount 正在执行的工单数（并发闸门里占着位子的）。
+func (m *Manager) ActiveCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.inFlight
+}
+
+// QueuedCount 已建单但还没轮到执行的工单数。
+func (m *Manager) QueuedCount() int {
+	return len(m.queue)
+}
+
+// maxConcurrent 读设置页里的并发上限（默认 2），同样支持运行时修改。
+func (m *Manager) maxConcurrent() int {
+	if st, err := m.store.GetSettings(); err == nil && st.Runs.MaxConcurrentRuns > 0 {
+		return st.Runs.MaxConcurrentRuns
+	}
+	return m.maxConcurrentDefault
 }
 
 // Start launches workers + the expiry loop, and closes out runs orphaned by a restart.
@@ -152,12 +185,17 @@ func (m *Manager) Start() {
 // 这样即使调用方忘了 Start()（例如测试里直接建 Manager）工单也不会卡在队列里。
 func (m *Manager) ensureWorkers() {
 	m.workersOnce.Do(func() {
-		for i := 0; i < m.maxConcurrent; i++ {
+		// 固定开一小把 worker（上限），真正的并发闸门在 worker() 里按设置读取，
+		// 这样在设置页改并发数不需要重启。
+		for i := 0; i < workerCeiling; i++ {
 			m.wg.Add(1)
 			go m.worker()
 		}
 	})
 }
+
+// workerCeiling 是 worker 数量上限；实际并发由设置页的 maxConcurrentRuns 决定。
+const workerCeiling = 8
 
 // recoverInterrupted 把上次进程残留的 running 标记为 interrupted（checkpoint 保留，
 // 用户可以「继续」）——否则重启后这些工单永远停在 running。
@@ -189,7 +227,28 @@ func (m *Manager) worker() {
 				return
 			default:
 			}
+			// 并发闸门：等一个空位（上限实时读设置页）
+			for {
+				m.mu.Lock()
+				limit := m.maxConcurrent()
+				ok := m.inFlight < limit
+				if ok {
+					m.inFlight++
+				}
+				m.mu.Unlock()
+				if ok {
+					break
+				}
+				select {
+				case <-m.stopCh:
+					return
+				case <-time.After(200 * time.Millisecond):
+				}
+			}
 			job()
+			m.mu.Lock()
+			m.inFlight--
+			m.mu.Unlock()
 		}
 	}
 }

@@ -218,6 +218,39 @@ export interface Settings {
   }
   library: {
     embyUrl?: string
+    embyApiKeyConfigured?: boolean
+    komgaUrl?: string
+    komgaApiKeyConfigured?: boolean
+    gameatlasUrl?: string
+    gameatlasApiKeyConfigured?: boolean
+  }
+  runs: {
+    expireDays: number
+    keepEventsDays: number
+    maxConcurrentRuns: number
+  }
+  search: {
+    exaApiKeyConfigured: boolean
+  }
+  skillRoot: string
+}
+
+/** 设置页提交的载荷（密钥留空=不修改，clearXxx=清空）。 */
+export interface SettingsPayload {
+  llm: {
+    endpoint: string
+    model: string
+    apiKey?: string
+    clearApiKey?: boolean
+    temperature?: number
+    maxTokens?: number
+  }
+  search: {
+    exaApiKey?: string
+    clearExaApiKey?: boolean
+  }
+  library: {
+    embyUrl?: string
     embyApiKey?: string
     komgaUrl?: string
     komgaApiKey?: string
@@ -227,8 +260,26 @@ export interface Settings {
   runs: {
     expireDays: number
     keepEventsDays: number
+    maxConcurrentRuns: number
   }
   skillRoot: string
+}
+
+export interface RuntimeInfo {
+  model: string
+  maxConcurrentRuns: number
+  activeRuns: number
+  queuedRuns: number
+  skillRoot: string
+  stats: {
+    works: number
+    docs: number
+    revisions: number
+    runs: number
+    runEvents: number
+    runningNow: number
+  }
+  features: string[]
 }
 
 export interface PutContentResult {

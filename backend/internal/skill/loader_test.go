@@ -14,11 +14,11 @@ func writeSkillFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	files := map[string]string{
-		"SKILL.md":      "---\nname: wiki-writing\n---\n# Skill\n通用边界\n",
-		"core.md":       "# Core\n9 章骨架\n",
-		"media-game.md": "# Game\n玩法章名\n",
+		"SKILL.md":       "---\nname: wiki-writing\n---\n# Skill\n通用边界\n",
+		"core.md":        "# Core\n9 章骨架\n",
+		"media-game.md":  "# Game\n玩法章名\n",
 		"media-video.md": "# Video\n影视章名\n",
-		"media-book.md": "# Book\n图书章名\n",
+		"media-book.md":  "# Book\n图书章名\n",
 		"frontmatter.md": "# FM\n",
 	}
 	for name, content := range files {

@@ -14,8 +14,8 @@ type QualityResult struct {
 }
 
 var (
-	h2Re  = regexp.MustCompile(`(?m)^##\s+`)
-	hAny  = regexp.MustCompile(`(?m)^#{1,6}\s+`)
+	h2Re   = regexp.MustCompile(`(?m)^##\s+`)
+	hAny   = regexp.MustCompile(`(?m)^#{1,6}\s+`)
 	linkRe = regexp.MustCompile(`(?m)^\s*(?:[-*+]|\d+\.)\s+\S`)
 )
 

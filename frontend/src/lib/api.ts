@@ -13,8 +13,10 @@ import type {
   Revision,
   Run,
   RunEvent,
+  RuntimeInfo,
   SearchHit,
   Settings,
+  SettingsPayload,
   Work,
   WorkSummary,
 } from '../types'
@@ -235,8 +237,28 @@ export function getSettings(): Promise<Settings> {
   return request('/api/settings')
 }
 
-export function putSettings(body: Partial<Settings>): Promise<Settings> {
+export function putSettings(body: SettingsPayload): Promise<Settings> {
   return request('/api/settings', { method: 'PUT', body: JSON.stringify(body) })
+}
+
+/** 用当前配置发一次极小请求，验证模型连通性。 */
+export function testLLM(): Promise<{
+  ok: boolean
+  model?: string
+  latencyMs?: number
+  reply?: string
+  error?: string
+}> {
+  return request('/api/settings/test-llm', { method: 'POST' })
+}
+
+/** 把进程环境里的 WIKIALTAS_* 重新导入设置（覆盖当前值）。 */
+export function importEnvSettings(): Promise<{ imported: boolean; settings: Settings }> {
+  return request('/api/settings/import-env', { method: 'POST' })
+}
+
+export function getRuntime(): Promise<RuntimeInfo> {
+  return request('/api/runtime')
 }
 
 // --- SSE（实现见 lib/sse.ts，这里保持统一入口）---

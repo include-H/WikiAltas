@@ -302,7 +302,9 @@ function toolActions(steps: Step[]): { summary: string; description?: string }[]
     .filter((s): s is ToolStep => s.kind === 'tool')
     .map((t) => ({
       summary: t.label,
-      description: [t.detail, t.artifact?.join('\n')].filter(Boolean).join('\n\n') || undefined,
+      // 只给一行摘要：产物全文（artifact）留在 run_events 里，
+      // 直接塞进面板会让阶段默认展开时刷出一屏原文（飞书的芯片也只是一行）。
+      description: compactDetail(t.detail),
     }))
   // 连续同类调用合并成一行（飞书是「已搜索 2 次 · 参考 14 篇」的写法）
   const merged: { summary: string; description?: string; count: number }[] = []
@@ -319,6 +321,14 @@ function toolActions(steps: Step[]): { summary: string; description?: string }[]
     summary: count > 1 ? `${summary} ×${count}` : summary,
     description,
   }))
+}
+
+/** 工具描述压成一行（≤100 字），去掉换行与多余空白。 */
+function compactDetail(detail?: string): string | undefined {
+  if (!detail) return undefined
+  const flat = detail.replace(/\s+/g, ' ').trim()
+  if (!flat) return undefined
+  return flat.length > 100 ? `${flat.slice(0, 100)}…` : flat
 }
 
 /**

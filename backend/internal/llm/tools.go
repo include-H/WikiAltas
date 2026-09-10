@@ -4,7 +4,7 @@ import "encoding/json"
 
 // ToolDef is one OpenAI-compatible tool definition (function calling).
 type ToolDef struct {
-	Type     string     `json:"type"` // always "function"
+	Type     string      `json:"type"` // always "function"
 	Function FunctionDef `json:"function"`
 }
 

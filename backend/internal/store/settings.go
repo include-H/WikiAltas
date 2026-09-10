@@ -78,6 +78,9 @@ func mergeSettings(dst, src *domain.Settings) {
 	if src.Runs.KeepEventsDays > 0 {
 		dst.Runs.KeepEventsDays = src.Runs.KeepEventsDays
 	}
+	if src.Runs.MaxConcurrentRuns > 0 {
+		dst.Runs.MaxConcurrentRuns = src.Runs.MaxConcurrentRuns
+	}
 	if src.SkillRoot != "" {
 		dst.SkillRoot = src.SkillRoot
 	}

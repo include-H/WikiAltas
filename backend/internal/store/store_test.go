@@ -92,8 +92,8 @@ func TestPutContentVersionConflict(t *testing.T) {
 	// second write with correct expectedVersion
 	ver := int64(1)
 	res2, err := s.PutWorkContent(w.ID, domain.PutContentBody{
-		ContentMd:      "# v2",
-		Author:         domain.AuthorLLM,
+		ContentMd:       "# v2",
+		Author:          domain.AuthorLLM,
 		ExpectedVersion: &ver,
 	})
 	if err != nil {
@@ -106,8 +106,8 @@ func TestPutContentVersionConflict(t *testing.T) {
 	// stale expectedVersion → 409 conflict
 	stale := int64(1)
 	_, err = s.PutWorkContent(w.ID, domain.PutContentBody{
-		ContentMd:      "# v3",
-		Author:         domain.AuthorHuman,
+		ContentMd:       "# v3",
+		Author:          domain.AuthorHuman,
 		ExpectedVersion: &stale,
 	})
 	if err == nil {

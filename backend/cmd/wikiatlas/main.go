@@ -34,6 +34,14 @@ func main() {
 	}
 	defer st.Close()
 
+	// 配置来源：settings 表（SQLite）。首次启动把 env 里的 WIKIATLAS_* 导入一次，
+	// 之后一律以设置页为准（热生效，不需要重启）。
+	if imported, err := st.ImportEnvSettings(); err != nil {
+		log.Printf("import env settings: %v", err)
+	} else if imported {
+		log.Printf("settings imported from env (后续请在设置页修改)")
+	}
+
 	if *seed {
 		if err := seedIfEmpty(st); err != nil {
 			log.Printf("seed skipped: %v", err)

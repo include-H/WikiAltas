@@ -489,7 +489,78 @@ body {
   flex: 1;
   overflow: auto;
   padding: 24px 32px 64px;
-  max-width: 720px;
+  max-width: 900px;
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.settings-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.settings-card {
+  width: 100%;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 10px;
+}
+
+.settings-field-inline {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.settings-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--semi-color-text-2);
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.settings-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  font-size: 12px;
+  color: var(--semi-color-text-1);
+}
+
+.settings-features {
+  margin: 12px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.9;
+  color: var(--semi-color-text-1);
 }
 
 /* ===== BlockNote WYSIWYG (default edit body) ===== */

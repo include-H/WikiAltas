@@ -31,7 +31,7 @@ type Client interface {
 
 // Config holds OpenAI-compatible endpoint settings.
 type Config struct {
-	Endpoint    string  // e.g. https://api.openai.com/v1
+	Endpoint    string // e.g. https://api.openai.com/v1
 	APIKey      string
 	Model       string
 	Temperature *float64

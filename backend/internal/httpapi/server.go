@@ -94,6 +94,9 @@ func (s *Server) routes() {
 	// settings
 	m.HandleFunc("GET /api/settings", s.handleGetSettings)
 	m.HandleFunc("PUT /api/settings", s.handlePutSettings)
+	m.HandleFunc("POST /api/settings/test-llm", s.handleTestLLM)
+	m.HandleFunc("POST /api/settings/import-env", s.handleImportEnvSettings)
+	m.HandleFunc("GET /api/runtime", s.handleRuntime)
 }
 
 // --- helpers ---
@@ -615,29 +618,23 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
 		writeStoreErr(w, err)
 		return
 	}
-	// never leak the key; report presence
-	st.LLM.APIKeyConfigured = s.store.HasAPIKey() || st.LLM.APIKeyConfigured
-	// strip stored keys from response
-	st.Library.EmbyAPIKey = nil
-	st.Library.KomgaAPIKey = nil
-	st.Library.GameAtlasAPIKey = nil
-	writeJSON(w, http.StatusOK, st)
+	writeJSON(w, http.StatusOK, s.settingsForResponse(st))
+}
+
+// settingsForResponse 统一收口：只回"是否已配置"，绝不回密钥原文。
+func (s *Server) settingsForResponse(st *domain.Settings) *domain.Settings {
+	out := *st
+	out.LLM.APIKeyConfigured = s.store.HasAPIKey()
+	out.Search.ExaAPIKeyConfigured = s.store.ExaAPIKey() != ""
+	out.Library.EmbyAPIKeyConfigured = st.Library.EmbyAPIKey != nil && *st.Library.EmbyAPIKey != ""
+	out.Library.KomgaAPIKeyConfigured = st.Library.KomgaAPIKey != nil && *st.Library.KomgaAPIKey != ""
+	out.Library.GameAtlasAPIKeyConfigured = st.Library.GameAtlasAPIKey != nil && *st.Library.GameAtlasAPIKey != ""
+	out.Library.EmbyAPIKey = nil
+	out.Library.KomgaAPIKey = nil
+	out.Library.GameAtlasAPIKey = nil
+	return &out
 }
 
 func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
-	var st domain.Settings
-	if err := decodeBody(r, &st); err != nil {
-		writeErr(w, http.StatusBadRequest, "bad_json", err.Error())
-		return
-	}
-	// optional separate apiKey field not in Settings type — accept wrapper
-	if err := s.store.SaveSettings(&st); err != nil {
-		writeStoreErr(w, err)
-		return
-	}
-	st.LLM.APIKeyConfigured = s.store.HasAPIKey()
-	st.Library.EmbyAPIKey = nil
-	st.Library.KomgaAPIKey = nil
-	st.Library.GameAtlasAPIKey = nil
-	writeJSON(w, http.StatusOK, st)
+	s.putSettings(w, r)
 }

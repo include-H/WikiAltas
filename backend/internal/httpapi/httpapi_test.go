@@ -307,15 +307,31 @@ func TestSearchAndSettings(t *testing.T) {
 
 	// settings roundtrip
 	doJSON(t, "PUT", ts.URL+"/api/settings", map[string]any{
-		"llm": map[string]any{"endpoint": "http://localhost:1234/v1", "model": "local-model", "apiKeyConfigured": false},
-		"library": map[string]any{},
-		"runs": map[string]any{"expireDays": 7, "keepEventsDays": 90},
+		"llm":       map[string]any{"endpoint": "http://localhost:1234/v1", "model": "local-model"},
+		"library":   map[string]any{},
+		"runs":      map[string]any{"expireDays": 7, "keepEventsDays": 90, "maxConcurrentRuns": 3},
+		"search":    map[string]any{"exaApiKey": "exa-test-key"},
 		"skillRoot": ".claude/skill/wiki-writing",
 	}, 200)
 	st := doJSON(t, "GET", ts.URL+"/api/settings", nil, 200)
 	llm, _ := st["llm"].(map[string]any)
 	if llm["model"] != "local-model" {
 		t.Fatalf("settings model = %v", llm["model"])
+	}
+	// 密钥只回"是否已配置"，绝不回原文
+	if _, leaked := llm["apiKey"]; leaked {
+		t.Fatal("settings 响应泄露了 apiKey 原文")
+	}
+	search, _ := st["search"].(map[string]any)
+	if search["exaApiKeyConfigured"] != true {
+		t.Fatalf("exaApiKeyConfigured = %v", search["exaApiKeyConfigured"])
+	}
+	if _, leaked := search["exaApiKey"]; leaked {
+		t.Fatal("settings 响应泄露了 exaApiKey 原文")
+	}
+	runs, _ := st["runs"].(map[string]any)
+	if runs["maxConcurrentRuns"] != float64(3) {
+		t.Fatalf("maxConcurrentRuns = %v", runs["maxConcurrentRuns"])
 	}
 }
 
@@ -327,8 +343,8 @@ func TestRunCreateAndEvents(t *testing.T) {
 	wid := w["id"].(string)
 
 	created := doJSON(t, "POST", ts.URL+"/api/runs", map[string]any{
-		"intent": "create_wiki",
-		"goal":   "为测试作品写 Wiki",
+		"intent":  "create_wiki",
+		"goal":    "为测试作品写 Wiki",
 		"context": map[string]any{"workId": wid},
 	}, 201)
 	runID, _ := created["runId"].(string)

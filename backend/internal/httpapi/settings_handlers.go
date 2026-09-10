@@ -1,0 +1,179 @@
+package httpapi
+
+import (
+	"context"
+	"net/http"
+	"strings"
+	"time"
+
+	"wikiatlas/backend/internal/llm"
+)
+
+// settingsPayload 是设置页提交的载荷。
+// 密钥字段只在提交时出现：空字符串=不修改，clearXxx=true=清空。
+type settingsPayload struct {
+	LLM struct {
+		Endpoint    string   `json:"endpoint"`
+		Model       string   `json:"model"`
+		APIKey      string   `json:"apiKey"`
+		ClearAPIKey bool     `json:"clearApiKey"`
+		Temperature *float64 `json:"temperature"`
+		MaxTokens   *int     `json:"maxTokens"`
+	} `json:"llm"`
+	Search struct {
+		ExaAPIKey      string `json:"exaApiKey"`
+		ClearExaAPIKey bool   `json:"clearExaApiKey"`
+	} `json:"search"`
+	Library struct {
+		EmbyURL         *string `json:"embyUrl"`
+		EmbyAPIKey      *string `json:"embyApiKey"`
+		KomgaURL        *string `json:"komgaUrl"`
+		KomgaAPIKey     *string `json:"komgaApiKey"`
+		GameAtlasURL    *string `json:"gameatlasUrl"`
+		GameAtlasAPIKey *string `json:"gameatlasApiKey"`
+	} `json:"library"`
+	Runs struct {
+		ExpireDays        int `json:"expireDays"`
+		KeepEventsDays    int `json:"keepEventsDays"`
+		MaxConcurrentRuns int `json:"maxConcurrentRuns"`
+	} `json:"runs"`
+	SkillRoot string `json:"skillRoot"`
+}
+
+func nonEmpty(s *string) *string {
+	if s == nil || strings.TrimSpace(*s) == "" {
+		return nil
+	}
+	return s
+}
+
+func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
+	var p settingsPayload
+	if err := decodeBody(r, &p); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	// 以当前设置为底再覆盖：表单没出现的字段不能被抹掉
+	// （旧实现整体替换，导致媒体库密钥被清空）。
+	st, err := s.store.GetSettings()
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	if p.LLM.Endpoint != "" {
+		st.LLM.Endpoint = p.LLM.Endpoint
+	}
+	if p.LLM.Model != "" {
+		st.LLM.Model = p.LLM.Model
+	}
+	st.LLM.Temperature = p.LLM.Temperature
+	st.LLM.MaxTokens = p.LLM.MaxTokens
+	if v := nonEmpty(p.Library.EmbyURL); v != nil {
+		st.Library.EmbyURL = v
+	}
+	if v := nonEmpty(p.Library.EmbyAPIKey); v != nil {
+		st.Library.EmbyAPIKey = v
+	}
+	if v := nonEmpty(p.Library.KomgaURL); v != nil {
+		st.Library.KomgaURL = v
+	}
+	if v := nonEmpty(p.Library.KomgaAPIKey); v != nil {
+		st.Library.KomgaAPIKey = v
+	}
+	if v := nonEmpty(p.Library.GameAtlasURL); v != nil {
+		st.Library.GameAtlasURL = v
+	}
+	if v := nonEmpty(p.Library.GameAtlasAPIKey); v != nil {
+		st.Library.GameAtlasAPIKey = v
+	}
+	if p.Runs.ExpireDays > 0 {
+		st.Runs.ExpireDays = p.Runs.ExpireDays
+	}
+	if p.Runs.KeepEventsDays > 0 {
+		st.Runs.KeepEventsDays = p.Runs.KeepEventsDays
+	}
+	if p.Runs.MaxConcurrentRuns > 0 && p.Runs.MaxConcurrentRuns <= 16 {
+		st.Runs.MaxConcurrentRuns = p.Runs.MaxConcurrentRuns
+	}
+	if p.SkillRoot != "" {
+		st.SkillRoot = p.SkillRoot
+	}
+
+	if p.LLM.ClearAPIKey {
+		_ = s.store.SetAPIKey("")
+	} else if p.LLM.APIKey != "" {
+		_ = s.store.SetAPIKey(p.LLM.APIKey)
+	}
+	if p.Search.ClearExaAPIKey {
+		_ = s.store.SetSecret("exa_api_key", "")
+	} else if p.Search.ExaAPIKey != "" {
+		_ = s.store.SetSecret("exa_api_key", p.Search.ExaAPIKey)
+	}
+
+	if err := s.store.SaveSettings(st); err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.settingsForResponse(st))
+}
+
+// handleTestLLM：设置页的「测试连接」——用当前配置发一次极小的请求。
+func (s *Server) handleTestLLM(w http.ResponseWriter, r *http.Request) {
+	client := s.runs.ActiveClient()
+	if client == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "未配置模型"})
+		return
+	}
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	res, err := client.Chat(ctx, []llm.Message{{Role: "user", Content: "只回复两个字：正常"}}, nil)
+	latency := time.Since(start).Milliseconds()
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "model": client.Model(), "latencyMs": latency, "error": err.Error()})
+		return
+	}
+	reply := strings.TrimSpace(res.Content)
+	if len([]rune(reply)) > 60 {
+		reply = string([]rune(reply)[:60])
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "model": client.Model(), "latencyMs": latency, "reply": reply})
+}
+
+// handleImportEnvSettings：把当前进程环境里的 WIKIALTAS_* 重新导入设置（覆盖）。
+func (s *Server) handleImportEnvSettings(w http.ResponseWriter, _ *http.Request) {
+	imported, err := s.store.ReimportEnvSettings()
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	st, err := s.store.GetSettings()
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"imported": imported, "settings": s.settingsForResponse(st)})
+}
+
+// handleRuntime：设置页「关于/运行时」区块的数据。
+func (s *Server) handleRuntime(w http.ResponseWriter, _ *http.Request) {
+	st, _ := s.store.GetSettings()
+	stats, _ := s.store.RuntimeStats()
+	info := map[string]any{
+		"model":             s.runs.ActiveClient().Model(),
+		"maxConcurrentRuns": st.Runs.MaxConcurrentRuns,
+		"activeRuns":        s.runs.ActiveCount(),
+		"queuedRuns":        s.runs.QueuedCount(),
+		"skillRoot":         s.runs.SkillRoot(),
+		"stats":             stats,
+		"features": []string{
+			"阅读：宇宙树 / 大纲 / 正文（题记·说明块·九章）",
+			"写作：编辑态 Markdown（BlockNote）+ 飞书三态（编辑 / 修订 / 只读）",
+			"馆员：Run + 工具面（站内检索 / 联网核实 / 按章写入）+ 折叠叙事流",
+			"资料夹：系列资料列表，长文可按节写入并关联本系列单作",
+			"批次：一键批量建档（worker 池并发执行）",
+			"版本：每次写入成 revision，可回滚；修订可逐条接受/拒绝",
+		},
+	}
+	writeJSON(w, http.StatusOK, info)
+}

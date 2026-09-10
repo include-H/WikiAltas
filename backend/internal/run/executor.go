@@ -90,7 +90,7 @@ func (m *Manager) executeLLM(ctx context.Context, runID string, intent domain.Ru
 		Goal:      goal,
 		Context:   ctxMap,
 		Skill:     loader,
-		ExaAPIKey: tools.ExaKeyFromEnv(),
+		ExaAPIKey: m.exaKey(),
 		CacheGet:  cacheGet,
 		CacheSet:  cacheSet,
 		Emit: func(eventType string, payload map[string]any) {

@@ -112,8 +112,8 @@ func (s *Store) CreateLibraryLink(workID string, source domain.LibrarySource, ex
 // GetLibraryLink returns one link.
 func (s *Store) GetLibraryLink(id string) (*domain.LibraryLink, error) {
 	var (
-		l        domain.LibraryLink
-		url, th  sql.NullString
+		l       domain.LibraryLink
+		url, th sql.NullString
 	)
 	err := s.DB.QueryRow(`SELECT id, work_id, source, external_id, url, title_hint, created_at FROM library_links WHERE id = ?`, id).
 		Scan(&l.ID, &l.WorkID, &l.Source, &l.ExternalID, &url, &th, &l.CreatedAt)

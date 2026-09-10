@@ -238,11 +238,20 @@ type Settings struct {
 		KomgaAPIKey     *string `json:"komgaApiKey,omitempty"`
 		GameAtlasURL    *string `json:"gameatlasUrl,omitempty"`
 		GameAtlasAPIKey *string `json:"gameatlasApiKey,omitempty"`
+		// 是否已配置（响应里只回标记，不回密钥原文）
+		EmbyAPIKeyConfigured      bool `json:"embyApiKeyConfigured"`
+		KomgaAPIKeyConfigured     bool `json:"komgaApiKeyConfigured"`
+		GameAtlasAPIKeyConfigured bool `json:"gameatlasApiKeyConfigured"`
 	} `json:"library"`
 	Runs struct {
-		ExpireDays     int `json:"expireDays"`
-		KeepEventsDays int `json:"keepEventsDays"`
+		ExpireDays        int `json:"expireDays"`
+		KeepEventsDays    int `json:"keepEventsDays"`
+		MaxConcurrentRuns int `json:"maxConcurrentRuns"`
 	} `json:"runs"`
+	// Search 联网检索（Exa）。key 单独存 settings 表，接口只回"是否已配置"。
+	Search struct {
+		ExaAPIKeyConfigured bool `json:"exaApiKeyConfigured"`
+	} `json:"search"`
 	SkillRoot string `json:"skillRoot"`
 }
 
@@ -254,6 +263,7 @@ func DefaultSettings() Settings {
 	s.LLM.APIKeyConfigured = false
 	s.Runs.ExpireDays = 7
 	s.Runs.KeepEventsDays = 90
+	s.Runs.MaxConcurrentRuns = 2
 	s.SkillRoot = "/root/WikiAltas/skills/wiki-writing"
 	return s
 }
