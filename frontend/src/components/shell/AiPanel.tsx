@@ -147,11 +147,11 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
     void (async () => {
       try {
         const saved = localStorage.getItem(RUN_KEY + workspace)
-        let runId = saved
-        if (!runId) {
-          const res = await listRuns(undefined, 5, workspace)
-          runId = res.runs?.[0]?.id ?? null
-        }
+        // 以"这段会话最新的工单"为准：localStorage 里的可能是很早以前那次，
+        // 之前优先读它，导致面板一直挂着最初的会话（例如已被取消的旧工单）。
+        const res = await listRuns(undefined, 5, workspace).catch(() => null)
+        const newest = res?.runs?.[0]?.id ?? null
+        const runId = newest ?? saved
         if (!runId || cancelled) return
         const detail = await getRun(runId)
         if (cancelled || !detail?.run) return
