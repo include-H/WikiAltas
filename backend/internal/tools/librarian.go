@@ -248,6 +248,23 @@ func NewLibrarianRegistry(d LibrarianDeps) *Registry {
 			if p.TargetID == "" {
 				return jsonOK(map[string]any{"ok": false, "message": "targetId 缺失"})
 			}
+			// 破坏性写入护栏：空内容 / 被截断的残稿一律拒绝，
+			// 否则一次失败的工具调用就会把整篇正文清空（观测中真的发生过：v25 10812 字 → v26 0 字）。
+			newLen := len([]rune(strings.TrimSpace(p.ContentMd)))
+			if newLen == 0 {
+				return jsonOK(map[string]any{
+					"ok": false,
+					"message": "contentMd 为空，已拒绝写入（防止清空正文）。" +
+						"请把完整正文放进 contentMd 后重试；长文受输出上限限制，请改用逐章 patch_section。",
+				})
+			}
+			if prevLen := currentContentLen(d.Store, p.TargetType, p.TargetID); prevLen > 200 && newLen < 50 {
+				return jsonOK(map[string]any{
+					"ok": false,
+					"message": fmt.Sprintf("新正文只有 %d 字，而原正文有 %d 字，已拒绝覆盖（疑似被截断的残稿）。"+
+						"请补全后再写，或改用 patch_section 逐章更新。", newLen, prevLen),
+				})
+			}
 			if p.Summary == "" {
 				p.Summary = "馆员写入"
 			}
@@ -320,6 +337,12 @@ func NewLibrarianRegistry(d LibrarianDeps) *Registry {
 			}
 			if p.TargetID == "" {
 				p.TargetID, _ = d.Context["workId"].(string)
+			}
+			if strings.TrimSpace(p.NewMarkdown) == "" {
+				return jsonOK(map[string]any{
+					"ok":      false,
+					"message": "newMarkdown 为空，已拒绝（防止把整章删空）。请补全该章正文后重试。",
+				})
 			}
 			w, err := d.Store.GetWork(p.TargetID)
 			if err != nil {
@@ -657,6 +680,23 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// currentContentLen 取目标现有正文长度（用于破坏性写入护栏）。
+func currentContentLen(st *store.Store, targetType, targetID string) int {
+	if st == nil || targetID == "" {
+		return 0
+	}
+	if targetType == "doc" {
+		if doc, err := st.GetDoc(targetID); err == nil {
+			return len([]rune(doc.ContentMd))
+		}
+		return 0
+	}
+	if w, err := st.GetWork(targetID); err == nil && w.ContentMd != nil {
+		return len([]rune(*w.ContentMd))
+	}
+	return 0
 }
 
 // --- section patch ---

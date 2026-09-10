@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Button, Empty, Spin, Table, Tag, Toast, Typography } from '@douyinfe/semi-ui'
+import { AIChatDialogue, Button, Empty, Spin, Table, Tag, Toast, Typography } from '@douyinfe/semi-ui'
 import type { Run } from '../types'
 import { cancelRun, getRun, listRuns, resumeRun, streamRunEvents } from '../lib/api'
-import RunTimeline from '../components/run/RunTimeline'
+import { buildDialogueMessage } from '../lib/runProjection'
+import type { DialogueStep } from '../lib/runProjection'
 import type { RunEvent } from '../types'
 
 const { Text, Title } = Typography
@@ -189,7 +190,19 @@ export default function RunList() {
               关闭
             </Button>
           </div>
-          <RunTimeline events={events} startedAt={selected.startedAt} />
+          <AIChatDialogue
+            chats={[buildDialogueMessage(events, selected)] as never}
+            roleConfig={{ assistant: { name: '馆员' } }}
+            mode="noBubble"
+            showReset={false}
+            renderDialogueContentItem={
+              {
+                plan: (item: { content?: DialogueStep[] }) => (
+                  <AIChatDialogue.Step steps={item.content ?? []} />
+                ),
+              } as never
+            }
+          />
         </div>
       )}
     </div>

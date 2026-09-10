@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { AIChatInput, Button, Tag, Toast, Typography } from '@douyinfe/semi-ui'
+import { AIChatDialogue, AIChatInput, Button, Tag, Toast, Typography } from '@douyinfe/semi-ui'
 import { IconAIFilledLevel1, IconClose, IconRefresh } from '@douyinfe/semi-icons'
 import type { Run, RunEvent, RunIntent } from '../../types'
 import {
@@ -14,9 +14,9 @@ import {
 } from '../../lib/api'
 import { useAppStore } from '../../lib/store'
 import { workPath } from '../../lib/routes'
-import RunTimeline from '../run/RunTimeline'
 import BatchCard from '../run/BatchCard'
-import { dedupeEvents } from '../../lib/runProjection'
+import { buildDialogueMessage, dedupeEvents } from '../../lib/runProjection'
+import type { DialogueStep } from '../../lib/runProjection'
 
 const { Text, Title } = Typography
 
@@ -240,6 +240,21 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
   const canResume = !!run && (run.status === 'interrupted' || run.status === 'failed')
   const running = run?.status === 'running' || busy
 
+  // 事件流 → Semi 消息（阶段折叠交给 AIChatDialogue.Step，不再手搓）
+  const chats = useMemo(() => {
+    if (!run) return []
+    return [buildDialogueMessage(events, run)]
+  }, [events, run])
+
+  const dialogueRenderers = useMemo(
+    () => ({
+      plan: (item: { content?: DialogueStep[] }) => (
+        <AIChatDialogue.Step steps={item.content ?? []} />
+      ),
+    }),
+    [],
+  )
+
   return (
     <div className="ai-panel">
       <div className="ai-panel-header">
@@ -294,7 +309,13 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
           </div>
         ) : (
           <>
-            <RunTimeline events={events} startedAt={run?.startedAt} />
+            <AIChatDialogue
+              chats={chats as never}
+              roleConfig={{ assistant: { name: '馆员' } }}
+              mode="noBubble"
+              showReset={false}
+              renderDialogueContentItem={dialogueRenderers as never}
+            />
             {canResume && (
               <div className="ai-resume-row">
                 <Tag size="small" color="orange">

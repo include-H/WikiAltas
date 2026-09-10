@@ -1,8 +1,12 @@
-import type { RunEvent, RunTask } from '../types'
+import type { Run, RunEvent, RunTask } from '../types'
 
-// Run 事件 → 折叠叙事流的投影规则（VISUAL_SPEC §4）：
-// 阶段头来自 plan.updated 的任务；阶段内是叙事句 + 工具芯片；
-// 芯片文案是人话，不是工具名；展开才是入参/产物摘要。
+// Run 事件 → Semi AIChatDialogue 的消息投影。
+//
+// 复用 Semi 原生能力（不再手搓折叠）：
+//   · 阶段折叠 = AIChatDialogue.Step（steps[{summary,status,actions[]}]）
+//   · 叙事句   = message / output_text（AIChatDialogue 自带 Markdown 渲染）
+//   · 工具调用 = 折进对应阶段的 actions（summary + description）
+//   · 失败     = message.status = failed（Semi 自带失败样式）
 
 export interface ToolStep {
   kind: 'tool'
@@ -43,6 +47,26 @@ export interface RunProjection {
   phases: Phase[]
   done: boolean
   failed: boolean
+}
+
+/** Semi AIChatDialogue 的 Step 结构（见 widgets/contentItem/dialogueStep.tsx）。 */
+export interface DialogueStep {
+  summary: string
+  status?: 'completed' | 'in_progress'
+  actions?: { summary: string; description?: string }[]
+}
+
+/** Semi AIChatDialogue 的 ContentItem（只需我们用到的那几种类型）。 */
+export type DialogueItem =
+  | { type: 'message'; content: { type: 'output_text'; text: string }[] }
+  | { type: 'plan'; content: DialogueStep[] }
+
+/** Semi AIChatDialogue 的 Message。 */
+export interface DialogueMessage {
+  id: string
+  role: 'assistant'
+  status: 'in_progress' | 'completed' | 'failed' | 'cancelled'
+  content: DialogueItem[]
 }
 
 /** 工具名 → 人话短语（飞书芯片语气）。 */
@@ -98,6 +122,9 @@ export function projectRun(events: RunEvent[]): RunProjection {
   const pendingTools = new Map<string, ToolStep>()
   let done = false
   let failed = false
+  // 阶段骨架只认第一份计划：执行器收尾时会把计划覆盖成固定四步（t1–t4），
+  // 如果按 id 重建，之前收集的叙述与工具芯片会全部丢失（真实观测：四个阶段全空、点不开）。
+  let planLocked = false
 
   const push = (step: Step) => current.steps.push(step)
 
@@ -107,20 +134,34 @@ export function projectRun(events: RunEvent[]): RunProjection {
       case 'plan.updated': {
         const tasks = p.tasks as RunTask[] | undefined
         if (!Array.isArray(tasks) || tasks.length === 0) break
-        // 计划就是阶段：按任务 id 合并，已经落在某阶段的步骤留在原地
-        const previous = new Map(phases.map((ph) => [ph.id, ph]))
-        const next: Phase[] = tasks.map((t) => ({
-          id: t.id,
-          title: t.title,
-          status: t.status,
-          steps: previous.get(t.id)?.steps ?? [],
-        }))
-        // 计划出现之前的步骤（默认阶段）归到第一阶段
-        const leftover = previous.get('phase-0')?.steps ?? []
-        if (leftover.length && next.length) next[0].steps = [...leftover, ...next[0].steps]
-        phases.length = 0
-        phases.push(...next)
-        current = next.find((ph) => ph.status === 'in_progress') ?? next[next.length - 1]
+        if (!planLocked) {
+          planLocked = true
+          const previous = new Map(phases.map((ph) => [ph.id, ph]))
+          const next: Phase[] = tasks.map((t) => ({
+            id: t.id,
+            title: t.title,
+            status: t.status,
+            steps: previous.get(t.id)?.steps ?? [],
+          }))
+          // 计划出现之前的步骤（默认阶段）归到第一阶段
+          const leftover = previous.get('phase-0')?.steps ?? []
+          if (leftover.length && next.length) next[0].steps = [...leftover, ...next[0].steps]
+          phases.length = 0
+          phases.push(...next)
+          current = next.find((ph) => ph.status === 'in_progress') ?? next[next.length - 1]
+        } else {
+          // 后续计划只更新状态（按 id 匹配），阶段标题与已收集的步骤保持不变
+          for (const t of tasks) {
+            const ph = phases.find((item) => item.id === t.id)
+            if (ph) ph.status = t.status
+          }
+          const inProgress = tasks.find((t) => t.status === 'in_progress')
+          if (inProgress) {
+            current = phases.find((item) => item.id === inProgress.id) ?? current
+          }
+          // 计划没有点名"进行中"时保持当前阶段不变：
+          // 否则一次收尾计划就会把后续所有芯片都塞进最后一段（观测中出现过 13 项挤在"自检收尾"）。
+        }
         break
       }
       case 'narrative': {
@@ -182,17 +223,27 @@ export function projectRun(events: RunEvent[]): RunProjection {
         break
       }
       case 'content.staging': {
-        push({ kind: 'narrative', id: ev.id, text: '开始写入正文…' })
+        // 仅用于正文区的"馆员正在写入"标记（store.setStaging），不进叙事流：
+        // 每次落库都占一行会变成刷屏（观测中出现了 23 行"开始写入正文…"）。
         break
       }
       case 'content.committed': {
         const version = typeof p.version === 'number' ? p.version : undefined
-        push({
-          kind: 'system',
-          id: ev.id,
-          text: version ? `已写入正文 v${version}` : '已写入正文',
-          tone: 'success',
-        })
+        // 写入回执不单独占行：同阶段通常已有 write_content / patch_section 芯片；
+        // 没有工具芯片时（如 mock 路径）才补一枚，避免刷屏。
+        const hasWriteChip = current.steps.some(
+          (s) => s.kind === 'tool' && (s.name === 'write_content' || s.name === 'patch_section'),
+        )
+        if (!hasWriteChip) {
+          push({
+            kind: 'tool',
+            id: ev.id,
+            name: 'write_content',
+            label: version ? `已写入正文 v${version}` : '已写入正文',
+            running: false,
+            failed: false,
+          })
+        }
         break
       }
       case 'tree.updated':
@@ -230,4 +281,86 @@ export function dedupeEvents(events: RunEvent[]): RunEvent[] {
     out.push(ev)
   }
   return out
+}
+
+function messageStatus(run: Pick<Run, 'status'>): DialogueMessage['status'] {
+  switch (run.status) {
+    case 'completed':
+      return 'completed'
+    case 'failed':
+      return 'failed'
+    case 'interrupted':
+    case 'expired':
+      return 'cancelled'
+    default:
+      return 'in_progress'
+  }
+}
+
+function toolActions(steps: Step[]): { summary: string; description?: string }[] {
+  const raw = steps
+    .filter((s): s is ToolStep => s.kind === 'tool')
+    .map((t) => ({
+      summary: t.label,
+      description: [t.detail, t.artifact?.join('\n')].filter(Boolean).join('\n\n') || undefined,
+    }))
+  // 连续同类调用合并成一行（飞书是「已搜索 2 次 · 参考 14 篇」的写法）
+  const merged: { summary: string; description?: string; count: number }[] = []
+  for (const a of raw) {
+    const last = merged[merged.length - 1]
+    if (last && last.summary === a.summary) {
+      last.count += 1
+      if (a.description) last.description = a.description
+      continue
+    }
+    merged.push({ ...a, count: 1 })
+  }
+  return merged.map(({ summary, description, count }) => ({
+    summary: count > 1 ? `${summary} ×${count}` : summary,
+    description,
+  }))
+}
+
+/**
+ * 把一次 Run 的事件流投影成一条 Semi 消息：
+ * 阶段（plan.updated）→ 可折叠的 Step，阶段内的工具调用 → 该 Step 的 actions；
+ * 叙事句与写入回执 → 顺序插入的 output_text。
+ */
+export function buildDialogueMessage(events: RunEvent[], run: Pick<Run, 'id' | 'status'>): DialogueMessage {
+  const { phases } = projectRun(dedupeEvents(events))
+  const content: DialogueItem[] = []
+  let lastNarrative = ''
+
+  for (const phase of phases) {
+    // 阶段内的叙事句先按原文顺序输出（连续重复的只留一句）
+    for (const step of phase.steps) {
+      if (step.kind === 'narrative') {
+        if (step.text === lastNarrative) continue
+        lastNarrative = step.text
+        content.push({ type: 'message', content: [{ type: 'output_text', text: step.text }] })
+      }
+    }
+    const actions = toolActions(phase.steps)
+    const step: DialogueStep = {
+      summary: phase.title,
+      status: phase.status === 'completed' ? 'completed' : 'in_progress',
+      actions: actions.length ? actions : undefined,
+    }
+    content.push({ type: 'plan', content: [step] })
+  }
+
+  // 收尾一行（Semi 的消息状态另有 loading / failed 图标）
+  const tail = phases[phases.length - 1]?.steps ?? []
+  for (const s of tail) {
+    if (s.kind === 'system') {
+      content.push({ type: 'message', content: [{ type: 'output_text', text: s.text }] })
+    }
+  }
+
+  return {
+    id: run.id,
+    role: 'assistant',
+    status: messageStatus(run),
+    content,
+  }
 }
