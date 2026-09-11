@@ -137,7 +137,11 @@ export type RunEventType =
   | 'run.started'
   | 'plan.updated'
   | 'narrative'
+  /** 流式增量：模型还在吐字（text 片段 / final 收尾） */
+  | 'narrative.delta'
   | 'tool.started'
+  /** 工具参数流式增量（args 为累计值，可能是半截 JSON） */
+  | 'tool.delta'
   | 'tool.done'
   | 'content.staging'
   | 'content.committed'

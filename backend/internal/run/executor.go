@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
 	"wikiatlas/backend/internal/domain"
 	"wikiatlas/backend/internal/llm"
@@ -13,6 +15,13 @@ import (
 )
 
 const maxToolRounds = 40
+
+// 上下文预算：模型窗口有限，长工单的 tool 返回会把它撑爆（表现为后半程开始胡说、忘事）。
+const (
+	contextBudgetChars = 120_000 // 约 4 万 token，给 32k/128k 窗口都留余量
+	contextKeepRecent  = 12      // 压缩时保留最近的消息条数
+	maxSameToolCall    = 3       // 同名同参工具的重复上限（超过就拦）
+)
 
 // 会改动内容的工具：只读模式下这些一律拒绝执行。
 var writeToolNames = map[string]bool{
@@ -23,6 +32,16 @@ var writeToolNames = map[string]bool{
 	"create_doc":          true,
 	"attach_library_link": true,
 	"sync_library":        true,
+}
+
+// controlTool 是"播报/计划"这类控制面工具：即使重复调用也不拦（模型常用来汇报进度）。
+func controlTool(name string) bool {
+	switch name {
+	case "narrative", "answer", "update_plan":
+		return true
+	default:
+		return false
+	}
 }
 
 // executeLLM runs the real tool-calling chat loop.
@@ -105,7 +124,7 @@ func (m *Manager) executeLLM(ctx context.Context, runID string, intent domain.Ru
 		},
 	})
 
-	toolDefs := buildToolDefs()
+	toolDefs := buildToolDefsFor(intent, docMode)
 
 	// messages: restore from checkpoint on resume
 	var messages []llm.Message
@@ -138,6 +157,8 @@ func (m *Manager) executeLLM(ctx context.Context, runID string, intent domain.Ru
 	lastErr := ""
 	// 同一章节的改写次数：防止模型对着某一章反复重写烧额度（观测中它连改 6 次）
 	sectionRewrites := map[string]int{}
+	// 同名同参调用次数：防止模型原地绕圈（同一个 read/search 调 5 遍）
+	callCounts := map[string]int{}
 
 	for round := 0; round < maxToolRounds; round++ {
 		select {
@@ -149,7 +170,14 @@ func (m *Manager) executeLLM(ctx context.Context, runID string, intent domain.Ru
 		}
 
 		iteration++
-		result, err := client.Chat(ctx, messages, toolDefs)
+		// 上下文压缩：超过预算就丢掉中间的工具往返，避免把模型窗口撑爆
+		if compacted, dropped := compactHistory(messages); dropped > 0 {
+			messages = compacted
+			m.emit(runID, "narrative", map[string]any{
+				"text": fmt.Sprintf("上下文较长，已压缩 %d 条历史工具记录。", dropped),
+			})
+		}
+		result, err := m.callModel(ctx, runID, client, messages, toolDefs)
 		if err != nil {
 			lastErr = err.Error()
 			m.emit(runID, "narrative", map[string]any{"text": "模型调用失败：" + lastErr})
@@ -192,6 +220,23 @@ func (m *Manager) executeLLM(ctx context.Context, runID string, intent domain.Ru
 			name := tc.Function.Name
 			args := tc.Function.Arguments
 			inputSummary := summarizeToolInput(name, args)
+
+			// 同名同参重复调用（模型绕圈子的典型症状）：超过上限就不再执行，
+			// 直接把"别再重复了"喂回去，省额度也防止对着同一段反复改。
+			callKey := name + "|" + shortHash(args)
+			callCounts[callKey]++
+			if callCounts[callKey] > maxSameToolCall && !controlTool(name) {
+				out, _ := json.Marshal(map[string]any{
+					"ok": false,
+					"message": fmt.Sprintf("同一调用（%s）已重复 %d 次，不会再生效。请换一种做法，或直接收尾并给出结论。",
+						name, callCounts[callKey]-1),
+				})
+				messages = append(messages, llm.Message{Role: "tool", ToolCallID: tc.ID, Name: name, Content: string(out)})
+				m.emit(runID, "tool.done", map[string]any{
+					"name": name, "outputSummary": "重复调用已拦截", "durationMs": 0,
+				})
+				continue
+			}
 
 			// 只读模式：写工具一律拒绝（模型仍然可以检索、阅读、回答、播报）
 			if docMode == "read" && writeToolNames[name] {
@@ -452,6 +497,25 @@ func buildToolDefs() []llm.ToolDef {
 	return defs
 }
 
+// buildToolDefsFor 按意图收口工具面：**问答/只读模式根本不下发写工具**。
+// 为什么要在"工具清单"这层拦：模型看不到 write_content 就不会尝试去写，
+// 比事后拒绝更可靠（真实事故：点「翻译这段」→ intent=continue_wiki →
+// 模型顺手把翻译结果写回正文，落了一条 revision）。
+func buildToolDefsFor(intent domain.RunIntent, docMode string) []llm.ToolDef {
+	all := buildToolDefs()
+	if intent != domain.RunIntentAnswer && docMode != "read" {
+		return all
+	}
+	out := make([]llm.ToolDef, 0, len(all))
+	for _, d := range all {
+		if writeToolNames[d.Function.Name] {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
 func buildInitialMessages(intent domain.RunIntent, goal string, ctxMap map[string]any, skillFiles []skill.File, medium domain.Medium, workID, docID, docMode, brief string) []llm.Message {
 	var sys strings.Builder
 	sys.WriteString("你是 WikiAltas 的 Altas，为个人媒体库撰写中文百科条目。严格遵守以下规则：\n")
@@ -660,4 +724,202 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// streamEmitInterval 是流式增量的节流间隔：太密会把 run_events 和 SSE 刷爆，
+// 太疏就看不见"边想边打"（飞书那种打字感大约就是这个量级）。
+const streamEmitInterval = 250 * time.Millisecond
+
+// 每轮 LLM 调用的上限与重试策略：
+//
+//	· 单轮最多 20 分钟（长章节够用），由 ctx 控制，用户取消能立刻打断；
+//	· 限流 / 5xx / 网络抖动重试 3 次（1s → 4s → 10s），每次都在叙事流里说一声；
+//	· 已经吐过字的流式失败不重试（重放会把同一段话重复给用户）。
+const (
+	llmRoundTimeout = 20 * time.Minute
+	llmMaxRetries   = 3
+)
+
+var llmRetryBackoff = []time.Duration{time.Second, 4 * time.Second, 10 * time.Second}
+
+// callModel 优先走流式：模型吐字时立刻发 narrative.delta / tool.delta，
+// 让面板"边想边打"、工具芯片先以运行中出现；不支持流的客户端自动退回 Chat。
+func (m *Manager) callModel(
+	ctx context.Context,
+	runID string,
+	client llm.Client,
+	messages []llm.Message,
+	tools []llm.ToolDef,
+) (llm.ChatResult, error) {
+	var lastErr error
+	for attempt := 0; attempt <= llmMaxRetries; attempt++ {
+		if attempt > 0 {
+			wait := llmRetryBackoff[min(attempt-1, len(llmRetryBackoff)-1)]
+			m.emit(runID, "narrative", map[string]any{
+				"text": fmt.Sprintf("模型接口不稳（%s），%s 后重试第 %d 次。", shortReason(lastErr), wait, attempt),
+			})
+			select {
+			case <-ctx.Done():
+				return llm.ChatResult{}, ctx.Err()
+			case <-time.After(wait):
+			}
+		}
+		res, err, streaming := m.callModelOnce(ctx, runID, client, messages, tools)
+		if err == nil {
+			return res, nil
+		}
+		lastErr = err
+		if streaming || !llm.IsRetryable(err) {
+			return res, err
+		}
+	}
+	return llm.ChatResult{}, lastErr
+}
+
+// callModelOnce 发一次请求（流式优先），返回 (结果, 错误, 这次是否用了流)。
+func (m *Manager) callModelOnce(
+	ctx context.Context,
+	runID string,
+	client llm.Client,
+	messages []llm.Message,
+	tools []llm.ToolDef,
+) (llm.ChatResult, error, bool) {
+	roundCtx, cancel := context.WithTimeout(ctx, llmRoundTimeout)
+	defer cancel()
+
+	sc, ok := client.(llm.StreamingClient)
+	if !ok || !streamEnabled() {
+		res, err := client.Chat(roundCtx, messages, tools)
+		return res, err, false
+	}
+	var (
+		lastEmit    time.Time
+		pendingText strings.Builder
+		pendingTool = map[int]llm.Delta{}
+		toolArgsRaw = map[int]string{}
+		emitted     = false
+	)
+	// flush 把"上次推送之后新攒的"增量发出去：
+	// 节流只影响发送频率，不会丢字（早先按帧节流会把窗口里的文本直接扔掉）。
+	flush := func() {
+		if pendingText.Len() > 0 {
+			m.emit(runID, "narrative.delta", map[string]any{"text": pendingText.String()})
+			pendingText.Reset()
+		}
+		for index, d := range pendingTool {
+			m.emit(runID, "tool.delta", map[string]any{
+				"index": index,
+				"id":    d.ToolID,
+				"name":  d.ToolName,
+				// args 必须是"累计到现在的参数"：前端要从中抠出 answer/narrative 的
+				// text 字段做流式打字，只给碎片的话永远是半截（观测到过 args='》'）。
+				"args": toolArgsRaw[index],
+			})
+		}
+		pendingTool = map[int]llm.Delta{}
+	}
+	onDelta := func(d llm.Delta) {
+		emitted = true
+		switch d.Kind {
+		case "text":
+			pendingText.WriteString(d.Text)
+		case "reasoning":
+			// 思维链只当"还在动"的心跳，不把原文铺给用户（VISUAL_SPEC：不做 CoT dump）
+		case "tool":
+			toolArgsRaw[d.ToolIndex] += d.Text
+			pendingTool[d.ToolIndex] = d
+		}
+		now := time.Now()
+		if now.Sub(lastEmit) < streamEmitInterval {
+			return
+		}
+		lastEmit = now
+		flush()
+	}
+
+	res, err := sc.ChatStream(roundCtx, messages, tools, onDelta)
+	flush()
+	if err != nil && res.Content == "" && len(res.ToolCalls) == 0 {
+		if emitted {
+			// 已经吐过字了：重放会重复内容，这次不重试
+			return res, err, true
+		}
+		// provider 不支持 stream（或中途断流）：退回一次性请求，功能不受影响
+		m.emit(runID, "narrative", map[string]any{"text": "流式中断，已回退普通请求。"})
+		res, err = client.Chat(roundCtx, messages, tools)
+		return res, err, false
+	}
+	// 收尾：告诉前端这一轮流式结束（前端据此关掉打字光标）
+	m.emit(runID, "narrative.delta", map[string]any{"text": "", "final": true})
+	return res, err, true
+}
+
+// shortReason 把错误压成一句话，供叙事流播报。
+func shortReason(err error) string {
+	if err == nil {
+		return "未知原因"
+	}
+	msg := strings.TrimSpace(err.Error())
+	msg = strings.SplitN(msg, "\n", 2)[0]
+	return truncate(msg, 80)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// compactHistory 把超预算的历史压掉：保留系统提示 + 首条用户消息 + 最近若干条，
+// 中间整段替换成一条说明（整段丢才安全 —— 只丢 assistant.tool_calls 或只丢 tool
+// 会让消息序列非法，provider 直接 400）。
+func compactHistory(messages []llm.Message) ([]llm.Message, int) {
+	total := 0
+	for _, m := range messages {
+		total += len(m.Content)
+	}
+	if total <= contextBudgetChars || len(messages) <= contextKeepRecent+3 {
+		return messages, 0
+	}
+	keepFrom := len(messages) - contextKeepRecent
+	if keepFrom < 3 {
+		return messages, 0
+	}
+	// 起点必须是"非 tool 返回"的消息，否则会出现没有对应 tool_calls 的孤儿回复
+	start := -1
+	for i := keepFrom; i < len(messages); i++ {
+		if messages[i].Role == "user" {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		for i := keepFrom; i < len(messages); i++ {
+			if messages[i].Role != "tool" {
+				start = i
+				break
+			}
+		}
+	}
+	if start <= 2 {
+		return messages, 0
+	}
+	dropped := start - 2
+	out := make([]llm.Message, 0, len(messages)-dropped+1)
+	out = append(out, messages[:2]...)
+	out = append(out, llm.Message{
+		Role: "user",
+		Content: fmt.Sprintf(
+			"（上下文压缩：中间 %d 条工具调用与返回已省略，因为窗口放不下。需要时重新调用工具读取，不要凭记忆写。）",
+			dropped),
+	})
+	out = append(out, messages[start:]...)
+	return out, dropped
+}
+
+// streamEnabled 允许用 WIKIATLAS_LLM_STREAM=0 关掉流式（排障用，默认开）。
+func streamEnabled() bool {
+	v := strings.TrimSpace(os.Getenv("WIKIATLAS_LLM_STREAM"))
+	return !(v == "0" || strings.EqualFold(v, "false") || strings.EqualFold(v, "off"))
 }

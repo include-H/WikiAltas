@@ -243,13 +243,32 @@ export default function SettingsView() {
           <div className="settings-field-inline">
             <div className="settings-field">
               <span className="settings-label">Temperature</span>
-              <InputNumber value={form.temperature ? Number(form.temperature) : undefined} onChange={(v) => set('temperature', v == null ? '' : String(v))} min={0} max={2} step={0.1} style={{ width: '100%' }} />
+              <InputNumber
+                value={form.temperature ? Number(form.temperature) : undefined}
+                onChange={(v) => set('temperature', v == null ? '' : String(v))}
+                min={0}
+                max={2}
+                step={0.1}
+                placeholder="默认 0.7"
+                style={{ width: '100%' }}
+              />
             </div>
             <div className="settings-field">
               <span className="settings-label">单次输出上限 (tokens)</span>
-              <InputNumber value={form.maxTokens ? Number(form.maxTokens) : undefined} onChange={(v) => set('maxTokens', v == null ? '' : String(v))} min={256} max={131072} step={1024} style={{ width: '100%' }} />
+              <InputNumber
+                value={form.maxTokens ? Number(form.maxTokens) : undefined}
+                onChange={(v) => set('maxTokens', v == null ? '' : String(v))}
+                min={256}
+                max={131072}
+                step={1024}
+                placeholder="默认 65536"
+                style={{ width: '100%' }}
+              />
             </div>
           </div>
+          <Text type="tertiary" size="small">
+            留空表示用模型默认值；这两项只影响新开的工单。
+          </Text>
           <div className="settings-actions">
             <Button loading={testing} onClick={() => void runTest()}>
               测试连接

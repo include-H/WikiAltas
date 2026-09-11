@@ -6,12 +6,21 @@ import { useLocation } from 'react-router-dom'
 import SideNav from './SideNav'
 import TopBar from './TopBar'
 import AiPanel from './AiPanel'
+import AiSidebar from './AiSidebar'
 import { useAppStore } from '../../lib/store'
 import { UNKNOWN_WORK_ID } from '../../lib/routes'
 
 export default function AppShell() {
-  const { aiPanelOpen, setAiPanelOpen, nodes, sidebarCollapsed, activeRuns, setActiveBatchId } =
-    useAppStore()
+  const {
+    aiPanelOpen,
+    setAiPanelOpen,
+    aiPanelWidth,
+    setAiPanelWidth,
+    nodes,
+    sidebarCollapsed,
+    activeRuns,
+    setActiveBatchId,
+  } = useAppStore()
   const { me } = useAppStore()
   const params = useParams()
   const loc = useLocation()
@@ -47,14 +56,17 @@ export default function AppShell() {
       </Layout.Sider>
       <Layout.Content className="shell-main">
         <TopBar />
-        <div className="shell-body">
-          <Outlet />
-        </div>
-        {me.authed && aiPanelOpen ? (
-          <div className="ai-float">
-            <AiPanel workId={workId} workTitle={workTitle} docId={docId} />
+        <div className="shell-work">
+          <div className="shell-body">
+            <Outlet />
           </div>
-        ) : me.authed ? (
+          {me.authed && aiPanelOpen && (
+            <AiSidebar width={aiPanelWidth} onWidthChange={setAiPanelWidth}>
+              <AiPanel workId={workId} workTitle={workTitle} docId={docId} />
+            </AiSidebar>
+          )}
+        </div>
+        {me.authed && !aiPanelOpen && (
           <FloatButton
             className="ai-float-btn"
             shape="round"
@@ -63,7 +75,7 @@ export default function AppShell() {
             badge={activeRuns.length > 0 ? { count: activeRuns.length } : undefined}
             onClick={() => setAiPanelOpen(true)}
           />
-        ) : null}
+        )}
       </Layout.Content>
     </Layout>
   )

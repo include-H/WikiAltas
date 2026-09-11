@@ -28,6 +28,23 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/*
+ * AI 紫：飞书主题包（@semi-bot/semi-theme-feishu）只带 --semi-purple-*，
+ * 没有 Semi 的 --semi-color-ai-* 语义 token。这些 token 一旦为空，
+ * `background: var(--semi-color-ai-purple)` 会算成 transparent，
+ * 紫底白字的 AI 按钮/图标会整块"隐形"（实测 getComputedStyle 为 rgba(0,0,0,0)）。
+ * 这里按主题自带的紫色阶补一次；深色模式会跟着 --semi-purple-* 自动换。
+ * 必须挂在 body 上而不是 :root：主题包把调色板定义在 body[theme-mode]，
+ * 写在 :root 的 var(--semi-purple-5) 在 html 作用域解析不到，会变成无效值。
+ * 只允许 AI 元素用这几个变量（VISUAL_SPEC §2：紫是 AI 的唯一强调色）。
+ */
+body {
+  --semi-color-ai-purple: rgba(var(--semi-purple-5));
+  --semi-color-ai-purple-hover: rgba(var(--semi-purple-6));
+  --semi-color-ai-purple-active: rgba(var(--semi-purple-7));
+  --semi-color-ai-purple-disabled: rgba(var(--semi-purple-2));
+}
+
 /* ===== Shell layout (Semi Layout + class hooks; no .semi-* reverse overrides) ===== */
 .app-shell {
   height: 100vh;
@@ -98,14 +115,17 @@ body {
   justify-content: flex-start;
   width: 100%;
   min-width: 0;
+  /* 列状 flex 容器里的子项默认可收缩：目录长了会把每条压扁，
+     这里钉死高度让 .outline-list 去滚动（对齐短目录的间距）。 */
+  flex-shrink: 0;
   text-align: left;
   border: none;
   background: transparent;
   cursor: pointer;
   font-family: inherit;
   height: auto;
-  min-height: 0;
-  padding: 7px 10px;
+  /* 12px × 1.5 行高 + 上下各 5px = 28px 一行：目录再长也不压缩，只滚动 */
+  padding: 5px 10px;
   border-radius: var(--semi-border-radius-medium);
   overflow: hidden;
   white-space: nowrap;
@@ -300,7 +320,9 @@ body {
 .ai-panel-body {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  /* 窄侧栏里横向滚动条很丑：只允许纵向滚动，长内容交给芯片自己的省略 */
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 14px;
 }
 
@@ -434,17 +456,22 @@ body {
 }
 
 .search-hit {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   justify-content: flex-start;
   text-align: left;
   height: auto;
   border: 1px solid var(--semi-color-border);
-  border-radius: var(--semi-border-radius-large);
+  border-radius: var(--semi-border-radius-medium);
   background: var(--semi-color-bg-0);
   padding: 10px 12px;
   white-space: normal;
+  cursor: pointer;
 }
 
-.search-hit:hover {
+.search-hit:hover,
+.search-hit.is-active {
   background: var(--semi-color-fill-0);
   color: var(--semi-color-text-0);
 }
@@ -455,47 +482,127 @@ body {
   gap: 8px;
 }
 
+.search-hit-snippet {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-body {
+  margin-top: 12px;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.search-foot {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--semi-color-border);
+  text-align: center;
+}
+
 /* ===== Runs ===== */
 .run-list-view {
   flex: 1;
   overflow: auto;
-  padding: 24px 28px 48px;
+  padding: 20px 28px 48px;
 }
 
 .run-list-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 16px;
+  margin-bottom: 4px;
 }
 
-.run-detail {
-  margin-top: 24px;
-  border: 1px solid var(--semi-color-border);
-  border-radius: var(--semi-border-radius-large);
-  padding: 16px;
-  background: var(--semi-color-bg-1);
+.run-list-tabs {
+  margin-bottom: 4px;
 }
 
-.run-detail-header {
+.run-list-tools {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
+  gap: 6px;
+}
+
+.run-cell-goal {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  /* 长目标必须自己收住，否则 auto 布局会把状态/操作列挤出屏幕 */
+  max-width: 640px;
+  overflow: hidden;
+}
+
+.run-cell-title {
+  color: var(--semi-color-text-0);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  white-space: normal;
+}
+
+/* 工单详情（SideSheet） */
+.run-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 100%;
+}
+
+.run-detail-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.run-detail-goal {
+  display: block;
+  font-size: 13px;
+  line-height: 1.7;
+  padding: 10px 12px;
+  border-radius: var(--semi-border-radius-medium);
+  background: var(--semi-color-fill-0);
+}
+
+.run-detail-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 /* ===== Settings ===== */
 .login-view {
   flex: 1;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: center;
-  padding: 64px 24px;
+  padding: 48px 24px;
+  overflow: auto;
 }
 
 .login-card {
-  width: 380px;
+  width: 400px;
   max-width: 100%;
+}
+
+.login-brand {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 10px;
+}
+
+.login-brand .brand-mark {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  font-size: 16px;
+  border-radius: var(--semi-border-radius-large);
 }
 
 .login-field {
@@ -524,6 +631,7 @@ body {
   overflow: auto;
   padding: 24px 32px 64px;
   max-width: 900px;
+  margin: 0 auto;
 }
 
 .settings-head {
@@ -895,6 +1003,19 @@ body {
   gap: 2px;
 }
 
+.folder-pane-empty-text {
+  display: inline-block;
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--semi-color-text-2);
+}
+
+.folder-pane-empty-cta {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
 
 
 
@@ -1013,19 +1134,62 @@ body {
   flex-shrink: 0;
 }
 
-.ai-float {
-  position: absolute;
-  right: 16px;
-  bottom: 16px;
-  width: 400px;
-  max-width: calc(100% - 32px);
-  height: min(640px, calc(100% - 32px));
-  background: var(--semi-color-bg-0);
-  border: 1px solid var(--semi-color-border);
-  border-radius: var(--semi-border-radius-large);
-  box-shadow: var(--semi-shadow-elevated);
+/* 顶栏以下：正文 + 右侧 AI 侧栏并排 */
+.shell-work {
+  flex: 1;
+  min-height: 0;
+  display: flex;
   overflow: hidden;
-  z-index: 30;
+  position: relative;
+}
+
+/* Altas 侧栏：贴右侧、可拖拽改宽（收起时只剩右下角圆球 .ai-float-btn） */
+.ai-side {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--semi-color-bg-0);
+  border-left: 1px solid var(--semi-color-border);
+  overflow: hidden;
+}
+
+.ai-side.is-dragging {
+  transition: none;
+}
+
+.ai-side-handle {
+  position: absolute;
+  /* 放在侧栏内部靠左的一条：放外面会被 overflow:hidden 裁掉、点不到 */
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 2;
+  background: transparent;
+}
+
+.ai-side-handle:hover,
+.ai-side.is-dragging .ai-side-handle {
+  box-shadow: inset -2px 0 0 var(--semi-color-primary);
+}
+
+/* 窄视口：侧栏改为覆盖内容区（VISUAL_SPEC §1.5） */
+@media (max-width: 900px) {
+  .ai-side {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(460px, 100%) !important;
+    box-shadow: var(--semi-shadow-elevated);
+  }
+
+  .ai-side-handle {
+    display: none;
+  }
 }
 
 .dialog-field {
@@ -1262,6 +1426,10 @@ body {
   border-top: 1px solid var(--semi-color-border);
 }
 
+.home-blank {
+  max-width: 860px;
+}
+
 /* ===== 正文：文档头（飞书母本：主标题 + 作者行 + AI 共建） ===== */
 .doc-header {
   flex-shrink: 0;
@@ -1313,8 +1481,19 @@ body {
   flex: 1;
 }
 
+.doc-meta .ai-coedit-btn {
+  margin-left: 2px;
+}
+
 /* AI 唯一强调色：紫（仅用于 AI 元素） */
 .ai-coedit-btn {
+  /* 关键：不改 Semi 的选择器，只在该元素作用域里换掉它读取的 token。
+     Semi 的 solid primary 用 --semi-color-primary / -hover / -active，
+     直接写 background 会被 `.semi-button-primary:not(...):hover`（(0,5,0)）在 hover 时压回品牌蓝，
+     换成"就地改变量"既不用内联、也不用权重军备竞赛。 */
+  --semi-color-primary: var(--semi-color-ai-purple);
+  --semi-color-primary-hover: var(--semi-color-ai-purple-hover);
+  --semi-color-primary-active: var(--semi-color-ai-purple-active);
   background: var(--semi-color-ai-purple);
   color: var(--semi-color-white);
 }
@@ -1330,13 +1509,116 @@ body {
 }
 
 /* 顶栏 AI 入口（对应飞书母本的「问豆包」，藏在最右侧、不抢戏） */
+/* 阶段芯片（面板与工单详情共用，默认收起） */
+.ai-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.ai-step-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 10px;
+  border: 1px solid var(--semi-color-border);
+  border-radius: var(--semi-border-radius-medium);
+  background: var(--semi-color-bg-0);
+  color: var(--semi-color-text-0);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.ai-step-chip:disabled {
+  cursor: default;
+}
+
+.ai-step-chip.is-open,
+.ai-step-chip:hover:not(:disabled) {
+  background: var(--semi-color-fill-0);
+}
+
+.ai-step-icon.is-done {
+  color: var(--semi-color-success);
+  display: inline-flex;
+}
+
+.ai-step-icon.is-running {
+  color: var(--semi-color-text-2);
+  display: inline-flex;
+}
+
+.ai-step-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-step-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--semi-color-text-2);
+  font-size: 12px;
+}
+
+.ai-step-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 2px;
+  padding-left: 8px;
+  border-left: 2px solid var(--semi-color-border);
+}
+
+.ai-step-action {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ai-step-action-summary {
+  font-size: 12px;
+  color: var(--semi-color-text-1);
+}
+
+.ai-step-action-desc {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: var(--semi-border-radius-small);
+  background: var(--semi-color-fill-0);
+  color: var(--semi-color-text-2);
+  font-size: 12px;
+  /* 窄侧栏里一句话就够：超出用省略号，不出横向滚动条 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ai-topbar-btn {
+  /* 同理：Semi 的 tertiary borderless 读 --semi-color-text-1 与 --semi-color-tertiary-hover，
+     就地换掉，文字与 hover 底色才会真的走 AI 紫。
+     注意 borderless 的 hover/active 实际读的是 --semi-color-fill-0 / -1（选择器里带 :not()，
+     权重 (0,3,0)），所以这两个也要在本元素里换掉。 */
+  --semi-color-text-1: var(--semi-color-ai-purple);
+  --semi-color-fill-0: rgba(var(--semi-purple-0));
+  --semi-color-fill-1: rgba(var(--semi-purple-1));
+  --semi-color-tertiary-hover: rgba(var(--semi-purple-0));
+  --semi-color-tertiary-active: rgba(var(--semi-purple-1));
   color: var(--semi-color-ai-purple);
 }
 
 .ai-topbar-btn:hover {
-  color: var(--semi-color-ai-purple-hover);
-  background: var(--semi-color-fill-0);
+  color: var(--semi-color-ai-purple);
+  background: rgba(var(--semi-purple-0));
+}
+
+.ai-topbar-btn:active {
+  background: rgba(var(--semi-purple-1));
 }
 
 /* 空文档里的行内 AI 胶囊（飞书「AI 帮我写」的位置与形态） */
@@ -1444,14 +1726,19 @@ body {
   box-shadow: inset 0 0 0 1px var(--semi-color-border);
 }
 
-/* ===== 题记：书页留白（对齐 GameManager 原始实现：无底色无边框） ===== */
+/* ===== 题记：书页留白（VISUAL_SPEC §3：居中 + 衬线 + 淡底 + 上下细分隔线） ===== */
 .doc-epigraph,
 .md-preview .doc-epigraph {
-  margin: 2em auto;
+  margin: 30px auto;
+  /* 编辑器里题记挂在 .bn-block-content（display: flex）下，作为 flex item 会
+     按内容收缩：阅读态 760px、编辑态 idle 625px、编辑态打开 textarea 后只剩
+     259px。钉成 100%（配合 max-width）让两态与阅读态同宽，进出编辑不再跳。 */
+  width: 100%;
   max-width: 900px;
-  padding: 0;
-  border: none;
-  background: transparent;
+  padding: 20px 30px;
+  border-top: 1px solid var(--semi-color-border);
+  border-bottom: 1px solid var(--semi-color-border);
+  background: var(--semi-color-primary-light-default);
   text-align: center;
   color: var(--semi-color-text-1);
   font-family:
@@ -1461,7 +1748,7 @@ body {
 
 .doc-epigraph-content {
   position: relative;
-  padding: 1.35em 3.4em;
+  padding: 0.7em 2.2em;
 }
 
 /* 一对对角装饰引号：左上 “ / 右下 ” */
@@ -1469,9 +1756,10 @@ body {
 .doc-epigraph-content::after {
   position: absolute;
   font-family: Georgia, 'Times New Roman', serif;
-  font-size: clamp(2.4rem, 4vw, 3.6rem);
+  font-size: clamp(2rem, 3.4vw, 3rem);
   line-height: 1;
-  color: var(--semi-color-primary-light-active);
+  color: var(--semi-color-primary);
+  opacity: 0.35;
   pointer-events: none;
 }
 
@@ -1543,10 +1831,28 @@ body {
 
 .doc-epigraph.is-editable {
   cursor: text;
+  outline: 1px solid transparent;
+  outline-offset: -1px;
+  transition:
+    background-color 0.12s ease,
+    outline-color 0.12s ease;
 }
 
 .doc-epigraph.is-editable:hover {
-  opacity: 0.92;
+  background: var(--semi-color-primary-light-hover);
+  outline-color: var(--semi-color-primary-light-active);
+}
+
+.doc-epigraph.is-editable:focus-visible {
+  outline-color: var(--semi-color-primary);
+}
+
+/* 正在编辑：整块给虚线框 + 更实的淡蓝底，和「可点但还没点」区分开 */
+.doc-epigraph.is-editing {
+  background: var(--semi-color-primary-light-hover);
+  outline: 1px dashed var(--semi-color-primary);
+  outline-offset: -1px;
+  border-radius: var(--semi-border-radius-medium);
 }
 
 .doc-epigraph-input {

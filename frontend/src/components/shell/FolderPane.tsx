@@ -114,9 +114,22 @@ export default function FolderPane({ workId }: { workId: string }) {
           <Spin style={{ display: 'block', margin: '24px auto' }} />
         ) : docs.length === 0 ? (
           <Empty
-            description="暂无资料"
+            className="folder-pane-empty"
+            description={
+              <span className="folder-pane-empty-text">
+                还没有资料
+                <br />
+                资料是挂在系列下的长文（设定集、访谈、攻略…）
+              </span>
+            }
             style={{ padding: 16 }}
-          />
+          >
+            <div className="folder-pane-empty-cta">
+              <Button size="small" theme="light" icon={<IconPlus />} onClick={() => setCreating(true)}>
+                新建资料
+              </Button>
+            </div>
+          </Empty>
         ) : (
           docs.map((d) => (
             <div

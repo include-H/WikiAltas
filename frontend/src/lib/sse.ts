@@ -13,7 +13,10 @@ const NAMED_EVENTS: RunEventType[] = [
   'run.started',
   'plan.updated',
   'narrative',
+  // 流式增量：漏订阅的话面板就退化成"整段蹦出来"（EventSource 只派发显式订阅的命名事件）
+  'narrative.delta',
   'tool.started',
+  'tool.delta',
   'tool.done',
   'content.staging',
   'content.committed',

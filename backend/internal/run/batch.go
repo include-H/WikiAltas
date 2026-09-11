@@ -8,7 +8,11 @@ import (
 	"wikiatlas/backend/internal/store"
 )
 
-const batchMaxSize = 20
+const (
+	batchMaxSize = 20
+	// batchMaxRequest 是单次请求能提交的节点数上限（防止一口气排几百个真模型工单）
+	batchMaxRequest = 50
+)
 
 // CreateBatch 把一批作品节点排成 Altas 工单。
 //
@@ -19,6 +23,11 @@ const batchMaxSize = 20
 func (m *Manager) CreateBatch(body domain.CreateBatchBody) (*domain.BatchResult, error) {
 	if len(body.WorkIDs) == 0 {
 		return nil, store.ErrValidation{Message: "workIds is required"}
+	}
+	// 上限护栏：一次批量最多 50 部（batchSize 是"这批要处理几部"，这里是"一次请求别塞太多"），
+	// 否则一个 POST 就能瞬间排几百个真模型工单，既烧额度又拖垮前端。
+	if len(body.WorkIDs) > batchMaxRequest {
+		return nil, store.ErrValidation{Message: fmt.Sprintf("一次最多 %d 部，收到 %d 个", batchMaxRequest, len(body.WorkIDs))}
 	}
 	size := body.BatchSize
 	if size <= 0 || size > batchMaxSize {

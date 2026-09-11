@@ -1,12 +1,23 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Button, Empty, List, Modal, Select, Spin, Tag, Toast, Typography } from '@douyinfe/semi-ui'
+import {
+  Button,
+  Empty,
+  List,
+  Modal,
+  Select,
+  Spin,
+  Tag,
+  Toast,
+  Tooltip,
+  Typography,
+} from '@douyinfe/semi-ui'
 import { IconAIFilledLevel1, IconFile, IconPlus, IconStar } from '@douyinfe/semi-icons'
 import type { Run, WorkSummary } from '../types'
 import { createBatchWiki, listRuns } from '../lib/api'
 import { useAppStore } from '../lib/store'
 import { workPath } from '../lib/routes'
-import { STATUS_META, ancestorPath, relativeTime } from '../lib/tree'
+import { STATUS_META, absoluteTime, ancestorPath, relativeTime } from '../lib/tree'
 import { CreateNodeModal } from '../components/shell/WorkDialogs'
 import type { CreateTarget } from '../components/shell/WorkDialogs'
 
@@ -91,7 +102,9 @@ export default function Home() {
             {status.label}
           </Tag>
         )}
-        <span className="doc-row-time">{relativeTime(n.updatedAt)}</span>
+        <Tooltip content={absoluteTime(n.updatedAt)} position="left">
+          <span className="doc-row-time">{relativeTime(n.updatedAt)}</span>
+        </Tooltip>
       </List.Item>
     )
   }
@@ -143,10 +156,33 @@ export default function Home() {
       {treeError && (
         <Empty description={treeError} style={{ margin: '32px 0' }} />
       )}
+      {!treeLoading && !treeError && nodes.length === 0 && (
+        <Empty
+          className="home-blank"
+          description={
+            me.authed
+              ? '还没有任何条目。建一个宇宙，Altas 就能按 9 章骨架开始写。'
+              : '这个 Wiki 还没有公开内容'
+          }
+          style={{ margin: '56px 0' }}
+        >
+          {me.authed && (
+            <Button
+              theme="solid"
+              type="primary"
+              icon={<IconPlus />}
+              onClick={() => setCreateRoot({ id: null, title: '', kind: null })}
+            >
+              新建知识库
+            </Button>
+          )}
+        </Empty>
+      )}
 
-      {pinned.length > 0 && section('置顶', pinned, '', true)}
-      {section('最近作品', recent, '暂无作品')}
-      {me.authed && stubs.length > 0 && (
+      {/* 空库时只留一个空态，不再往下铺一堆空 section */}
+      {nodes.length > 0 && pinned.length > 0 && section('置顶', pinned, '', true)}
+      {nodes.length > 0 && section('最近作品', recent, '暂无作品')}
+      {nodes.length > 0 && me.authed && stubs.length > 0 && (
         <section className="home-section">
           <div className="home-section-head">
             <Title heading={6} className="home-section-title">
@@ -171,32 +207,29 @@ export default function Home() {
         </section>
       )}
 
-      {me.authed && (
+      {me.authed && running.length > 0 && (
       <section className="home-section">
         <Title heading={6} className="home-section-title">
           进行中工单
         </Title>
-        {running.length === 0 ? (
-          <div className="home-empty">暂无进行中的工单</div>
-        ) : (
-          <List<Run>
-            dataSource={running}
-            split={false}
-            className="doc-list"
-            renderItem={(r) => (
-              <List.Item key={r.id} className="doc-row" onClick={() => nav('/runs')}>
-                <div className="doc-row-main">
-                  <span className="doc-row-title">{r.goal || r.intent}</span>
-                  <span className="doc-row-path">{r.intent}</span>
-                </div>
-                <span className="doc-row-time">{relativeTime(r.startedAt)}</span>
-              </List.Item>
-            )}
-          />
-        )}
+        <List<Run>
+          dataSource={running}
+          split={false}
+          className="doc-list"
+          renderItem={(r) => (
+            <List.Item key={r.id} className="doc-row" onClick={() => nav('/runs')}>
+              <div className="doc-row-main">
+                <span className="doc-row-title">{r.goal || r.intent}</span>
+                <span className="doc-row-path">{r.intent}</span>
+              </div>
+              <span className="doc-row-time">{relativeTime(r.startedAt)}</span>
+            </List.Item>
+          )}
+        />
       </section>
       )}
 
+      {nodes.length > 0 && (
       <div className="home-foot">
         <Text type="tertiary" size="small">
           {me.authed
@@ -204,6 +237,7 @@ export default function Home() {
             : `${nodes.length} 篇公开文档 · 访客模式（登录后可写作与管理）`}
         </Text>
       </div>
+      )}
 
       <CreateNodeModal target={createRoot} onClose={() => setCreateRoot(null)} />
       <Modal

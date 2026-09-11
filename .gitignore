@@ -16,3 +16,8 @@ frontend/dist/
 # 构建缓存
 frontend/node_modules/.vite/
 *.tsbuildinfo
+
+# 本地参考：用户 checkout 的 deepseek-harness（295MB，只是拿来对照 harness 设计）
+/deepseek-harness/
+# 随手丢在仓库根目录的参考截图 / 临时图片
+/*.png

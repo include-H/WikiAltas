@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
-import { Banner, Button, Empty, Spin, Tag, Toast, Typography } from '@douyinfe/semi-ui'
+import { Banner, Button, Empty, Spin, Tag, Toast } from '@douyinfe/semi-ui'
 import type { Work } from '../types'
 import { getWork, putWorkContent, patchWork } from '../lib/api'
 import { useAppStore } from '../lib/store'
@@ -11,8 +11,6 @@ import DocActions from '../components/editor/DocActions'
 import PendingRevisions from '../components/editor/PendingRevisions'
 import { parseOutline } from '../lib/mdOutline'
 import { useLiveRefresh } from '../lib/useLiveRefresh'
-
-const { Text } = Typography
 
 export default function WorkView() {
   const { id } = useParams()
@@ -167,8 +165,7 @@ export default function WorkView() {
           mode={!me.authed || docMode === 'read' ? 'read' : 'edit'}
           actions={me.authed ? (
             <DocActions
-              workId={work.id}
-              workTitle={work.title}
+              work={work}
               onReload={load}
               onDeleted={() => nav('/')}
             />
@@ -182,12 +179,6 @@ export default function WorkView() {
           onTitleChange={me.authed ? onTitleChange : undefined}
           onDraftChange={setOutlineMd}
         />
-        <div className="work-foot">
-          <Text type="tertiary" size="small">
-            id: {work.id} · slug: {work.slug} · kind: {work.kind}
-            {work.medium ? ` · ${work.medium}` : ''} · status: {work.status}
-          </Text>
-        </div>
       </div>
     </div>
   )

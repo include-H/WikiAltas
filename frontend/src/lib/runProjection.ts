@@ -25,6 +25,8 @@ export interface NarrativeStep {
   kind: 'narrative'
   id: string
   text: string
+  /** 流式中（还没落最终文本）：渲染时带打字光标 */
+  streaming?: boolean
 }
 
 export interface SystemStep {
@@ -118,11 +120,12 @@ export interface DialogueStep {
 
 /**
  * Semi AIChatDialogue 的 ContentItem。
- * 必须直接用 Semi 认得的扁平结构（output_text 带 text）：
- * 之前多包了一层 `{type:'message', content:[...]}`，导致叙事整段不渲染。
+ * 叙事句必须写成 `{type:'message', content:'文字'}`：
+ * Semi 的 builtinRenderers 只认 message / reasoning / function_call / custom_tool_call，
+ * 没有独立的 output_text 渲染器（写成 output_text 会静默渲染成空）。
  */
 export type DialogueItem =
-  | { type: 'output_text'; text: string }
+  | { type: 'message'; content: string }
   | { type: 'plan'; content: DialogueStep[] }
 
 /** Semi AIChatDialogue 的 Message。 */
@@ -155,6 +158,22 @@ function labelOf(name: string): string {
   return TOOL_LABELS[name] ?? `已执行 ${name}`
 }
 
+/**
+ * 从"半截 JSON"里宽松地抠出 text 字段（answer/narrative 工具的流式参数）。
+ * 参数是逐字传的，随时可能是 `{"text": "已确认对` 这种未闭合状态，
+ * 所以不能用 JSON.parse（dsh 的 plan-summary 也是同样思路：mid-stream 回退）。
+ */
+function partialTextArg(raw: string): string {
+  const m = /"text"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(raw)
+  if (!m) return ''
+  const body = m[1]
+  try {
+    return JSON.parse(`"${body}"`) as string
+  } catch {
+    return body.replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+  }
+}
+
 function payloadOf(ev: RunEvent): Record<string, unknown> {
   return (ev.payload ?? {}) as Record<string, unknown>
 }
@@ -181,6 +200,12 @@ function artifactOf(p: Record<string, unknown>): { lines?: string[]; note?: stri
 export function projectRun(events: RunEvent[]): RunProjection {
   const steps: Step[] = []
   const pendingTools = new Map<string, ToolStep>()
+  /** 流式中的那一段助手文本（模型还在吐字时先占位，权威文本到达后收尾） */
+  let streamingText: NarrativeStep | null = null
+  /** tool.delta 先于 tool.started 到达时的运行中芯片（key = 流式 index） */
+  const streamingTools = new Map<number, ToolStep>()
+  /** answer / narrative 工具的流式文本占位（key = 流式 index） */
+  const answerStreams = new Map<number, NarrativeStep>()
   let done = false
   let failed = false
   /** 计划恰好四段时，用它的标题当阶段名（状态词模型各写各的，不采信）。 */
@@ -201,11 +226,86 @@ export function projectRun(events: RunEvent[]): RunProjection {
       }
       case 'narrative': {
         const text = str(p.text)
-        if (text) push({ kind: 'narrative', id: ev.id, text })
+        if (!text) break
+        // 权威文本到达：所有"答案流"占位（answer/narrative 工具的半截参数）作废
+        for (const [index, step] of answerStreams) {
+          const at = steps.indexOf(step)
+          if (at >= 0) steps.splice(at, 1)
+          answerStreams.delete(index)
+        }
+        if (streamingText) {
+          // 权威文本到达：用它收尾（比累积的更长就用权威的），并关掉打字光标
+          streamingText.text = text.length > streamingText.text.length ? text : streamingText.text
+          streamingText.streaming = false
+          streamingText = null
+          break
+        }
+        push({ kind: 'narrative', id: ev.id, text })
+        break
+      }
+      case 'narrative.delta': {
+        if (p.final === true) {
+          if (streamingText) streamingText.streaming = false
+          streamingText = null
+          break
+        }
+        const text = str(p.text) ?? ''
+        if (!text) break
+        if (!streamingText) {
+          streamingText = { kind: 'narrative', id: `stream-${ev.seq}`, text: '', streaming: true }
+          push(streamingText)
+        }
+        streamingText.text += text
+        break
+      }
+      case 'tool.delta': {
+        const index = typeof p.index === 'number' ? p.index : 0
+        const name = str(p.name) ?? 'tool'
+        const args = str(p.args) ?? ''
+        // answer / narrative 工具的参数就是"要说的话"：边传参边把它当叙事打出来，
+        // 这样面板里的回答是逐字长出来的（等 tool.done 后由权威 narrative 接管）。
+        if (name === 'answer' || name === 'narrative') {
+          const partial = partialTextArg(args)
+          if (partial) {
+            let slot = answerStreams.get(index)
+            if (!slot) {
+              slot = { kind: 'narrative', id: `stream-tool-${index}`, text: '', streaming: true }
+              answerStreams.set(index, slot)
+              push(slot)
+            }
+            slot.text = partial
+            break
+          }
+        }
+        const existing = streamingTools.get(index)
+        if (existing) {
+          existing.detail = args
+          break
+        }
+        const chip: ToolStep = {
+          kind: 'tool',
+          id: `stream-tool-${ev.seq}`,
+          name,
+          label: labelOf(name),
+          detail: args,
+          running: true,
+          failed: false,
+        }
+        streamingTools.set(index, chip)
+        push(chip)
         break
       }
       case 'tool.started': {
         const name = str(p.name) ?? 'tool'
+        // 这一轮已经用 tool.delta 画过运行中芯片：让权威芯片接管，避免一行两个
+        for (const [index, chip] of streamingTools) {
+          if (chip.name === name) {
+            const at = steps.indexOf(chip)
+            if (at >= 0) steps.splice(at, 1)
+            streamingTools.delete(index)
+            break
+          }
+        }
         const step: ToolStep = {
           kind: 'tool',
           id: ev.id,
@@ -221,6 +321,14 @@ export function projectRun(events: RunEvent[]): RunProjection {
       }
       case 'tool.done': {
         const name = str(p.name) ?? 'tool'
+        // 播报/回答类工具的流式占位到此为止（真正的文本由随后的 narrative 事件给出）
+        if (name === 'answer' || name === 'narrative') {
+          for (const [index, step] of answerStreams) {
+            const at = steps.indexOf(step)
+            if (at >= 0) steps.splice(at, 1)
+            answerStreams.delete(index)
+          }
+        }
         const outputSummary = str(p.outputSummary)
         const art = artifactOf(p)
         const durationMs = typeof p.durationMs === 'number' ? p.durationMs : undefined
@@ -337,7 +445,7 @@ function toolActions(steps: Step[]): { summary: string; description?: string }[]
       summary: t.label,
       // 只给一行摘要：产物全文（artifact）留在 run_events 里，
       // 直接塞进面板会让阶段默认展开时刷出一屏原文（飞书的芯片也只是一行）。
-      description: compactDetail(t.detail),
+      description: compactDetail(t.name, t.detail),
     }))
   // 连续同类调用合并成一行（飞书是「已搜索 2 次 · 参考 14 篇」的写法）
   const merged: { summary: string; description?: string; count: number }[] = []
@@ -356,10 +464,12 @@ function toolActions(steps: Step[]): { summary: string; description?: string }[]
   }))
 }
 
-/** 工具描述压成一行（≤100 字），去掉换行与多余空白。 */
-function compactDetail(detail?: string): string | undefined {
+/**
+ * 工具描述压成一行、只留最有信息量的那点（侧栏很窄，芯片一行放不下就换行/出滚动条）。
+ * 联网检索给「关键词 · 参考 N 篇」，抓网页给域名，写入类给 summary。
+ */
+function compactDetail(name: string, detail?: string): string | undefined {
   if (!detail) return undefined
-  // 输入摘要常是 JSON（{"q":"白狼崛起"} count=1）：去壳去引号，别把 JSON dump 给用户看
   const flat = detail
     .replace(/\s+/g, ' ')
     // 正文类字段是产物，不该出现在一行摘要里（芯片只留"做了什么"）
@@ -370,7 +480,36 @@ function compactDetail(detail?: string): string | undefined {
     .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '…')
     .trim()
   if (!flat) return undefined
-  return flat.length > 100 ? `${flat.slice(0, 100)}…` : flat
+
+  const cut = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s)
+
+  if (name === 'fetch_url') {
+    const url = /url:\s*(\S+)|(https?:\/\/\S+)/.exec(flat)
+    const raw = url?.[1] ?? url?.[2]
+    if (raw) {
+      try {
+        const host = new URL(raw).host.replace(/^www\./, '')
+        const failed = /http 403|http 4\d\d|http 5\d\d/i.test(flat)
+        return failed ? `${host} · 抓取失败` : host
+      } catch {
+        return cut(flat, 32)
+      }
+    }
+  }
+
+  if (name === 'search_web' || name === 'search_works') {
+    const q = /q:\s*(.+?)(?:·|参考|count=|$)/.exec(flat)?.[1]?.trim()
+    const count = /参考\s*(\d+)/.exec(flat)?.[1]
+    const parts = [q ? cut(q, 22) : '', count ? `参考 ${count} 篇` : ''].filter(Boolean)
+    if (parts.length) return parts.join(' · ')
+  }
+
+  if (WRITE_TOOLS.has(name)) {
+    const summary = /summary:\s*(.+?)(?:,|$)/.exec(flat)?.[1]?.trim()
+    if (summary) return cut(summary, 26)
+  }
+
+  return cut(flat, 36)
 }
 
 /**
@@ -392,7 +531,8 @@ export function buildDialogueMessages(
       if (step.kind === 'narrative') {
         if (step.text === lastNarrative) continue
         lastNarrative = step.text
-        content.push({ type: 'output_text', text: step.text })
+        // 流式中追加一个光标，读起来就是"正在打字"
+        content.push({ type: 'message', content: step.streaming ? `${step.text} ▍` : step.text })
       }
     }
     const actions = toolActions(phase.steps)
@@ -408,7 +548,7 @@ export function buildDialogueMessages(
   const tail = phases[phases.length - 1]?.steps ?? []
   for (const s of tail) {
     if (s.kind === 'system') {
-      content.push({ type: 'output_text', text: s.text })
+      content.push({ type: 'message', content: s.text })
     }
   }
 

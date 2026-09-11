@@ -159,8 +159,7 @@ export default function DocView() {
         <div className="work-foot">
           <div className="doc-foot-row">
             <Text type="tertiary" size="small">
-              资料 · id: {doc.id} · slug: {doc.slug}
-              {work ? ` · 归属 ${work.title}` : ''}
+              {work ? `归属 ${work.title}` : '资料'} · v{doc.contentVer}
             </Text>
             {linkedTitles.length > 0 && (
               <span className="doc-links">

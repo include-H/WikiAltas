@@ -1,8 +1,19 @@
 import { useCallback, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Button, Dropdown, Empty, List, Modal, Spin, Tag, Toast, Typography } from '@douyinfe/semi-ui'
+import {
+  Button,
+  Descriptions,
+  Dropdown,
+  Empty,
+  List,
+  Modal,
+  Spin,
+  Tag,
+  Toast,
+  Typography,
+} from '@douyinfe/semi-ui'
 import { IconMore } from '@douyinfe/semi-icons'
-import type { Revision } from '../../types'
+import type { Revision, Work } from '../../types'
 import { deleteWork, getWorkRevisions, restoreWorkRevision } from '../../lib/api'
 import { folderPath } from '../../lib/routes'
 import { absoluteTime } from '../../lib/tree'
@@ -15,26 +26,39 @@ const AUTHOR_LABEL: Record<string, string> = {
   import: '导入',
 }
 
+const KIND_LABEL: Record<string, string> = {
+  universe: '宇宙',
+  series: '系列',
+  work: '单作',
+}
+
+const STATUS_LABEL: Record<string, string> = {
+  stub: '待建档',
+  draft: '草稿',
+  ready: '已建档',
+}
+
 /**
- * 正文信息栏右侧只保留「…」。飞书母本里这里是克制的：
- * 分享 / 阅读态 / 锁全都不需要，AI 入口在顶栏与正文空态里（见 TopBar 与 MarkdownEditor）。
+ * 正文信息栏右侧的「…」：飞书母本里这里是克制的收纳位。
+ * 版本历史 / 回滚 / 删除 / 节点信息全收进菜单，正文区不再挂开发者元数据。
  */
 export default function DocActions({
-  workId,
-  workTitle,
+  work,
   onReload,
   onDeleted,
 }: {
-  workId: string
-  workTitle: string
+  work: Work
   onReload: () => Promise<void> | void
   onDeleted: () => void
 }) {
   const nav = useNavigate()
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [infoOpen, setInfoOpen] = useState(false)
   const [revisions, setRevisions] = useState<Revision[]>([])
   const [loading, setLoading] = useState(false)
   const [restoring, setRestoring] = useState<string | null>(null)
+
+  const workId = work.id
 
   const loadRevisions = useCallback(async () => {
     setLoading(true)
@@ -70,7 +94,7 @@ export default function DocActions({
 
   const confirmDelete = () => {
     Modal.confirm({
-      title: `删除「${workTitle}」？`,
+      title: `删除「${work.title}」？`,
       content: '正文与版本历史一并移除，无法撤销。若存在子节点会被拒绝。',
       okType: 'danger',
       okText: '删除',
@@ -104,6 +128,7 @@ export default function DocActions({
               回滚到上一版
             </Dropdown.Item>
             <Dropdown.Divider />
+            <Dropdown.Item onClick={() => setInfoOpen(true)}>节点信息</Dropdown.Item>
             <Dropdown.Item type="danger" onClick={confirmDelete}>
               删除
             </Dropdown.Item>
@@ -159,6 +184,29 @@ export default function DocActions({
             )}
           />
         )}
+      </Modal>
+
+      <Modal
+        title="节点信息"
+        visible={infoOpen}
+        onCancel={() => setInfoOpen(false)}
+        footer={null}
+        width={520}
+      >
+        <Descriptions
+          data={[
+            { key: '标题', value: work.title },
+            { key: '层级', value: KIND_LABEL[work.kind] ?? work.kind },
+            { key: '介质', value: work.medium ?? '—' },
+            { key: '状态', value: STATUS_LABEL[work.status] ?? work.status },
+            { key: '可见性', value: work.visibility === 'public' ? '公开' : '私有' },
+            { key: '版本', value: `v${work.contentVer}` },
+            { key: 'slug', value: work.slug },
+            { key: 'ID', value: work.id },
+            { key: '创建', value: absoluteTime(work.createdAt) },
+            { key: '更新', value: absoluteTime(work.updatedAt) },
+          ]}
+        />
       </Modal>
     </>
   )

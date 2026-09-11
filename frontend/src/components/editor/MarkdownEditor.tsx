@@ -131,7 +131,9 @@ export default function MarkdownEditor({
   return (
     <div className="md-editor">
       <div className="doc-header">
-        {mode === 'edit' ? (
+        {/* 标题可改才用输入框：资料（doc）的标题走资料夹改名，这里直接按标题渲染，
+            否则 disabled 的 Input 会把标题灰掉，看起来像不可用。 */}
+        {mode === 'edit' && onTitleChange ? (
           <Input
             borderless
             className="doc-title-input"
@@ -139,7 +141,6 @@ export default function MarkdownEditor({
             inputStyle={{ fontSize: 30, fontWeight: 600, lineHeight: 1.3, padding: '2px 0' }}
             onChange={setEditTitle}
             placeholder="请输入标题"
-            disabled={!onTitleChange}
           />
         ) : (
           <Title heading={2} className="doc-title-read">
@@ -171,6 +172,7 @@ export default function MarkdownEditor({
               保存
             </Button>
           )}
+          {/* 「AI 共建」= 顶栏「问 Altas」，同一个 AI 入口不重复放（用户 2026-09-10 决定移除） */}
           {actions}
         </div>
       </div>

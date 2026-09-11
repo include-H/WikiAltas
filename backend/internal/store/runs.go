@@ -281,11 +281,27 @@ func (s *Store) AppendRunEvent(runID, eventType string, payload map[string]any) 
 
 // ListRunEvents returns events after lastSeq (exclusive), limited.
 func (s *Store) ListRunEvents(runID string, afterSeq int64, limit int) ([]domain.RunEvent, error) {
+	return s.listRunEvents(runID, afterSeq, limit, false)
+}
+
+// ListRunEventsPlain 同上，但跳过流式增量（narrative.delta / tool.delta）。
+// 用途：面板/工单页重建历史时只要"权威事件"，否则长工单会被增量挤满 200 条窗口，
+// 前面的章节叙事全被截掉（引入流式之后真实踩到）。
+func (s *Store) ListRunEventsPlain(runID string, afterSeq int64, limit int) ([]domain.RunEvent, error) {
+	return s.listRunEvents(runID, afterSeq, limit, true)
+}
+
+func (s *Store) listRunEvents(runID string, afterSeq int64, limit int, plain bool) ([]domain.RunEvent, error) {
 	if limit <= 0 {
 		limit = 200
 	}
-	rows, err := s.DB.Query(`SELECT id, run_id, seq, type, payload, created_at FROM run_events
-		WHERE run_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?`, runID, afterSeq, limit)
+	query := `SELECT id, run_id, seq, type, payload, created_at FROM run_events
+		WHERE run_id = ? AND seq > ?`
+	if plain {
+		query += ` AND type NOT IN ('narrative.delta','tool.delta')`
+	}
+	query += ` ORDER BY seq ASC LIMIT ?`
+	rows, err := s.DB.Query(query, runID, afterSeq, limit)
 	if err != nil {
 		return nil, err
 	}

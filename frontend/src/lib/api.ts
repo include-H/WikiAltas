@@ -214,7 +214,11 @@ export function getRun(
   id: string,
   opts?: { afterSeq?: number; limit?: number },
 ): Promise<{ run: Run; events?: RunEvent[] }> {
-  return request(`/api/runs/${id}${qs({ afterSeq: opts?.afterSeq, limit: opts?.limit })}`)
+  // 默认要 1000 条权威事件：长工单（几十轮工具调用）200 条装不下，
+  // 面板重建时前面的章节会看不到。增量事件后端已经默认过滤掉。
+  return request(
+    `/api/runs/${id}${qs({ afterSeq: opts?.afterSeq, limit: opts?.limit ?? 1000 })}`,
+  )
 }
 
 // --- Library ---

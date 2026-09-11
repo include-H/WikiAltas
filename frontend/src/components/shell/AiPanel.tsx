@@ -7,7 +7,6 @@ import {
   Popover,
   Tag,
   Toast,
-  Tooltip,
   Typography,
 } from '@douyinfe/semi-ui'
 import { IconAIFilledLevel1, IconClose, IconRefresh } from '@douyinfe/semi-icons'
@@ -24,6 +23,7 @@ import {
 import { useAppStore } from '../../lib/store'
 import { workPath } from '../../lib/routes'
 import BatchCard from '../run/BatchCard'
+import RunSteps from '../run/RunSteps'
 import { buildDialogueMessages, dedupeEvents } from '../../lib/runProjection'
 import type { DialogueStep } from '../../lib/runProjection'
 
@@ -65,12 +65,6 @@ const SKILLS = [
   },
 ]
 
-const MODE_HINT: Record<string, { label: string; tip: string }> = {
-  read: { label: '只读', tip: '只分析，不动正文' },
-  edit: { label: '编辑', tip: '直接改正文' },
-  revision: { label: '修订', tip: '改动逐条待确认' },
-}
-
 export default function AiPanel({ workId, workTitle, docId }: Props) {
   const {
     setAiPanelOpen,
@@ -92,6 +86,10 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
   const [busy, setBusy] = useState(false)
   const [restoring, setRestoring] = useState(false)
   const sseRef = useRef<SseHandle | null>(null)
+  const panelRef = useRef<HTMLDivElement | null>(null)
+  const dialogueRef = useRef<InstanceType<typeof AIChatDialogue> | null>(null)
+  /** 用户往上翻看历史时不要抢滚动：只有贴着底部才自动跟 */
+  const stickToBottom = useRef(true)
   const lastSeq = useRef(0)
   // 用户在正文里的选区存在 store 里：点进面板会丢掉 DOM 选区，正文工具栏也要用同一份
   const selection = docSelection
@@ -229,12 +227,14 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
     }
   }, [workspace, subscribe])
 
-  const send = async (text: string) => {
+  const send = async (text: string, forceIntent?: RunIntent) => {
     // 输入框里结尾的 "@" 只是唤起引用列表用的，别带进工单目标
     const goal = text.trim().replace(/@$/, '').trim()
     if (!goal) return
-    // 意图由上下文推导，界面上没有"功能按钮菜单"（VISUAL_SPEC §4）
-    const intent: RunIntent = docId ? 'write_doc' : workId ? 'continue_wiki' : 'create_wiki'
+    // 意图由上下文推导，界面上没有"功能按钮菜单"（VISUAL_SPEC §4）。
+    // 例外：只读模式、以及正文工具栏的"一次性输出"动作（翻译/解释）一律走 answer —— 只回话不改文件。
+    const intent: RunIntent =
+      forceIntent ?? (docMode === 'read' ? 'answer' : docId ? 'write_doc' : workId ? 'continue_wiki' : 'create_wiki')
     setBusy(true)
     try {
       const context: Record<string, string> = {}
@@ -306,10 +306,10 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
   sendRef.current = send
   useEffect(() => {
     if (!ask) return
-    const { prompt, autoSend } = ask
+    const { prompt, autoSend, intent } = ask
     clearAsk()
     if (autoSend && prompt) {
-      void sendRef.current(prompt)
+      void sendRef.current(prompt, intent)
       return
     }
     window.requestAnimationFrame(() => {
@@ -324,17 +324,32 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
     return buildDialogueMessages(events, run)
   }, [events, run])
 
+  // 流式追加时保持贴底（用户翻历史就不抢）
+  useEffect(() => {
+    const box = panelRef.current?.querySelector('.semi-ai-chat-dialogue-list') as HTMLElement | null
+    if (!box) return
+    const onScroll = () => {
+      stickToBottom.current = box.scrollHeight - box.scrollTop - box.clientHeight < 80
+    }
+    box.addEventListener('scroll', onScroll)
+    return () => box.removeEventListener('scroll', onScroll)
+  }, [run])
+
+  useEffect(() => {
+    if (run && stickToBottom.current) dialogueRef.current?.scrollToBottom(false)
+  }, [events, run])
+
   const dialogueRenderers = useMemo(
     () => ({
       plan: (item: { content?: DialogueStep[] }) => (
-        <AIChatDialogue.Step steps={item.content ?? []} />
+        <RunSteps steps={item.content ?? []} />
       ),
     }),
     [],
   )
 
   return (
-    <div className="ai-panel">
+    <div className="ai-panel" ref={panelRef}>
       <div className="ai-panel-header">
         <div className="ai-panel-title">
           <span className="ai-panel-mark">
@@ -349,11 +364,6 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
             </Text>
           )}
         </div>
-        <Tooltip content={MODE_HINT[docMode]?.tip}>
-          <Tag size="small" color={docMode === 'read' ? 'grey' : docMode === 'revision' ? 'orange' : 'blue'}>
-            {MODE_HINT[docMode]?.label ?? docMode}
-          </Tag>
-        </Tooltip>
         <Button
           theme="borderless"
           type="tertiary"
@@ -382,6 +392,7 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
         ) : (
           <>
             <AIChatDialogue
+              ref={dialogueRef}
               chats={chats as never}
               roleConfig={{ assistant: { name: 'Altas' } }}
               mode="noBubble"

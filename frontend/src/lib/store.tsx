@@ -18,6 +18,9 @@ interface AppStore {
   refreshMe: () => Promise<void>
   aiPanelOpen: boolean
   setAiPanelOpen: (open: boolean) => void
+  /** AI 侧栏宽度（贴右侧、可拖拽；localStorage 记忆） */
+  aiPanelWidth: number
+  setAiPanelWidth: (width: number) => void
   activeRuns: Run[]
   refreshRuns: () => Promise<void>
   /** bump when AI committed content so views can refresh */
@@ -43,9 +46,15 @@ interface AppStore {
   /**
    * 正文工具栏发起的一次提问，由 AI 面板消费：
    * prompt 为空 = 只把选段交给面板等用户提问；autoSend = 直接发出去（如「翻译这段」）。
+   * intent = 'answer' 时走问答工单：不落正文、只回话（翻译/解释这类一次性输出）。
    */
-  ask: { prompt: string; autoSend: boolean } | null
-  askSelection: (opts: { selection: string; prompt?: string; autoSend?: boolean }) => void
+  ask: { prompt: string; autoSend: boolean; intent?: 'answer' } | null
+  askSelection: (opts: {
+    selection: string
+    prompt?: string
+    autoSend?: boolean
+    intent?: 'answer'
+  }) => void
   clearAsk: () => void
   sidebarCollapsed: boolean
   setSidebarCollapsed: (v: boolean) => void
@@ -67,6 +76,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [treeLoading, setTreeLoading] = useState(true)
   const [treeError, setTreeError] = useState<string | null>(null)
   const [aiPanelOpen, setAiPanelOpen] = useState(false)
+  const [aiPanelWidth, setAiPanelWidthState] = useState(() => {
+    const raw = Number(localStorage.getItem('wikiatlas.aiWidth') ?? '')
+    return Number.isFinite(raw) && raw >= 320 ? Math.min(raw, 900) : 460
+  })
   const [activeRuns, setActiveRuns] = useState<Run[]>([])
   const [contentStamp, setContentStamp] = useState(0)
   const [lastCommitted, setLastCommitted] = useState<{ targetId: string; version: number } | null>(
@@ -76,7 +89,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [docMode, setDocMode] = useState<DocMode>('edit')
   const [pinnedIds, setPinnedIds] = useState<string[]>(() => readPins())
   const [docSelection, setDocSelection] = useState('')
-  const [ask, setAsk] = useState<{ prompt: string; autoSend: boolean } | null>(null)
+  const [ask, setAsk] = useState<{ prompt: string; autoSend: boolean; intent?: 'answer' } | null>(
+    null,
+  )
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [activeBatchId, setActiveBatchIdState] = useState<string | null>(() =>
     localStorage.getItem('wikiatlas.batch'),
@@ -101,15 +116,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const askSelection = useCallback(
-    ({ selection, prompt = '', autoSend = false }: { selection: string; prompt?: string; autoSend?: boolean }) => {
+    ({
+      selection,
+      prompt = '',
+      autoSend = false,
+      intent,
+    }: {
+      selection: string
+      prompt?: string
+      autoSend?: boolean
+      intent?: 'answer'
+    }) => {
       setDocSelection(selection)
-      setAsk({ prompt, autoSend })
+      setAsk({ prompt, autoSend, intent })
       setAiPanelOpen(true)
     },
     [],
   )
 
   const clearAsk = useCallback(() => setAsk(null), [])
+
+  const setAiPanelWidth = useCallback((width: number) => {
+    const clamped = Math.max(320, Math.min(width, Math.round(window.innerWidth * 0.7)))
+    setAiPanelWidthState(clamped)
+    try {
+      localStorage.setItem('wikiatlas.aiWidth', String(clamped))
+    } catch {
+      // 存不了就只在本次会话生效
+    }
+  }, [])
 
   const refreshTree = useCallback(async () => {
     setTreeLoading(true)
@@ -173,6 +208,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       refreshMe,
       aiPanelOpen,
       setAiPanelOpen,
+      aiPanelWidth,
+      setAiPanelWidth,
       activeRuns,
       refreshRuns,
       contentStamp,
@@ -203,6 +240,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       meLoaded,
       refreshMe,
       aiPanelOpen,
+      aiPanelWidth,
+      setAiPanelWidth,
       activeRuns,
       refreshRuns,
       contentStamp,

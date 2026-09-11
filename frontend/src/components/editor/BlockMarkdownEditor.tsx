@@ -181,6 +181,21 @@ export default function BlockMarkdownEditor({
     if (el) syncHeadingIds(el)
   }, [])
 
+  // 题记是自定义块，点它进编辑态时 ProseMirror 的选区还停在上一个块上，
+  // 结果格式化工具条会飘在上一段头顶。编辑题记期间把工具条收起来。
+  const [epigraphEditing, setEpigraphEditing] = useState(false)
+  useEffect(() => {
+    const sync = () =>
+      setEpigraphEditing(!!document.activeElement?.closest?.('.doc-epigraph-input'))
+    const onFocusOut = () => window.setTimeout(sync, 0)
+    document.addEventListener('focusin', sync)
+    document.addEventListener('focusout', onFocusOut)
+    return () => {
+      document.removeEventListener('focusin', sync)
+      document.removeEventListener('focusout', onFocusOut)
+    }
+  }, [])
+
   return (
     <div className="block-editor-scroll" id={scrollId} ref={setWrap}>
       <div className="block-editor-inner" ref={innerRef}>
@@ -198,7 +213,9 @@ export default function BlockMarkdownEditor({
           theme={colorScheme}
           formattingToolbar={false}
         >
-          <FormattingToolbarController formattingToolbar={FeishuToolbar} />
+          {!epigraphEditing && (
+            <FormattingToolbarController formattingToolbar={FeishuToolbar} />
+          )}
           <SideMenuController />
         </BlockNoteView>
       </div>

@@ -496,6 +496,9 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
+	if limit > 200 {
+		limit = 200
+	}
 	runs, err := s.store.ListRuns(status, workspace, limit)
 	if err != nil {
 		writeStoreErr(w, err)
@@ -524,7 +527,14 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	events, _ := s.store.ListRunEvents(id, afterSeq, limit)
+	// 默认只回权威事件（去掉流式增量）：否则增量会把 200 条的窗口占满，
+	// 面板重建长工单时只剩后半段。需要原始增量时传 ?deltas=1。
+	var events []domain.RunEvent
+	if r.URL.Query().Get("deltas") == "1" {
+		events, _ = s.store.ListRunEvents(id, afterSeq, limit)
+	} else {
+		events, _ = s.store.ListRunEventsPlain(id, afterSeq, limit)
+	}
 	if events == nil {
 		events = []domain.RunEvent{}
 	}
@@ -563,7 +573,9 @@ func (s *Server) handleRunEventStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// replay backlog
-	history, err := s.store.ListRunEvents(id, lastSeq, 500)
+	// 回放跳过流式增量：它们只对"当场看着"有意义，重建历史时权威事件足够，
+	// 还能避免 500 条窗口被增量占满。
+	history, err := s.store.ListRunEventsPlain(id, lastSeq, 500)
 	if err == nil {
 		for _, ev := range history {
 			writeSSE(w, ev)

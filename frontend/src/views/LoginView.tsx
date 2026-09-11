@@ -43,6 +43,9 @@ export default function LoginView() {
   return (
     <div className="login-view">
       <Card className="login-card">
+        <div className="login-brand">
+          <span className="brand-mark">W</span>
+        </div>
         <Title heading={4} style={{ margin: '0 0 4px', textAlign: 'center' }}>
           WikiAltas
         </Title>

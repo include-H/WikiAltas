@@ -98,7 +98,8 @@ export default function FeishuToolbar() {
       Toast.info('先选中一段正文')
       return
     }
-    askSelection({ selection: text, prompt, autoSend })
+    // 翻译 / 解释是一次性输出：走问答工单，不落正文（否则模型会顺手把结果写回文档）
+    askSelection({ selection: text, prompt, autoSend, intent: autoSend ? 'answer' : undefined })
   }
 
   return (

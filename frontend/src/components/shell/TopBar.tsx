@@ -1,17 +1,20 @@
 import { useMemo } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
-import { Avatar, Breadcrumb, Button, Dropdown, Tooltip } from '@douyinfe/semi-ui'
+import { Avatar, Breadcrumb, Button, Dropdown, Toast, Tooltip } from '@douyinfe/semi-ui'
 import {
   IconAIFilledLevel1,
   IconChevronRight,
   IconEdit,
+  IconGlobe,
   IconHistory,
+  IconLock,
   IconMore,
   IconSun,
   IconMoon,
 } from '@douyinfe/semi-icons'
 import { useAppStore, type DocMode } from '../../lib/store'
 import { UNKNOWN_WORK_ID, workPath } from '../../lib/routes'
+import { patchWork } from '../../lib/api'
 import { ancestorPath, relativeTime } from '../../lib/tree'
 import { toggleTheme } from '../../lib/theme'
 
@@ -21,7 +24,7 @@ export default function TopBar() {
   const nav = useNavigate()
   const loc = useLocation()
   const params = useParams()
-  const { nodes, setAiPanelOpen, docMode, setDocMode, me, refreshMe } = useAppStore()
+  const { nodes, setAiPanelOpen, docMode, setDocMode, me, refreshMe, refreshTree } = useAppStore()
   const nav2 = useNavigate()
 
   const doLogout = async () => {
@@ -29,6 +32,17 @@ export default function TopBar() {
     await logout().catch(() => undefined)
     await refreshMe()
     nav2('/')
+  }
+
+  /** 可见性开关（对齐飞书顶栏的锁图标）：私有 = 仅登录可见，公开 = 访客可读。 */
+  const setVisibility = async (id: string, visibility: 'public' | 'private') => {
+    try {
+      await patchWork(id, { visibility })
+      await refreshTree()
+      Toast.success(visibility === 'public' ? '已公开：访客可读' : '已设为私有')
+    } catch (e) {
+      Toast.error(e instanceof Error ? e.message : '可见性更新失败')
+    }
   }
 
   const routeId = params.id
@@ -105,10 +119,46 @@ export default function TopBar() {
             </Button>
           </Dropdown>
         )}
+        {/* 可见性（对齐飞书母本的锁图标）：私有/公开直接改当前节点 */}
+        {me.authed && onDoc && current && (
+          <Dropdown
+            trigger="click"
+            position="bottomRight"
+            render={
+              <Dropdown.Menu>
+                <Dropdown.Item
+                  icon={<IconGlobe size="small" />}
+                  onClick={() => void setVisibility(current.id, 'public')}
+                >
+                  公开：访客可读
+                </Dropdown.Item>
+                <Dropdown.Item
+                  icon={<IconLock size="small" />}
+                  onClick={() => void setVisibility(current.id, 'private')}
+                >
+                  私有：仅登录可见
+                </Dropdown.Item>
+              </Dropdown.Menu>
+            }
+          >
+            {/* 注意：这里不要再套 Tooltip —— Dropdown 的 trigger 只认直接子元素，
+                包一层后点击事件被吃掉，菜单永远弹不出来。 */}
+            <Button
+              theme="borderless"
+              type="tertiary"
+              size="small"
+              icon={current.visibility === 'public' ? <IconGlobe /> : <IconLock />}
+              aria-label={current.visibility === 'public' ? '可见性：公开' : '可见性：私有'}
+            />
+          </Dropdown>
+        )}
         {me.authed && (
         <Tooltip content="问 Altas" position="bottom">
           <Button
             className="ai-topbar-btn"
+            /* 紫色不靠内联：`.ai-topbar-btn` 在元素作用域内把 Semi 读的
+               --semi-color-text-1 / --semi-color-tertiary-hover 换成 AI 紫，
+               连 hover/active 一起生效（见 index.css 注释）。 */
             theme="borderless"
             type="tertiary"
             size="small"
