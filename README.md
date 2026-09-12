@@ -1,5 +1,7 @@
 # WikiAltas
 
+> 本项目由不知名网友 **Hao** 与 **DeepSeek V4.1-Flash MAX** 共同完成。
+
 WikiAltas 是一个面向个人媒体库的中文百科创作工具。它把散落在 Emby（影视）、Komga（漫画 / 轻小说）、GameAtlas（游戏）里的收藏，整理成一棵「宇宙 → 系列 → 单作」的知识树，并交给一个名叫 **Altas** 的 LLM 馆员按统一的写作规范产出条目——写完之后，再由宿主把作品和媒体库里的条目自动对上号。
 
 它同时是 [GameAtlas](https://github.com/include-H/GameAtlas) 的孪生项目：游戏条目从 GameAtlas 拉取建议、写好的 Wiki 反哺回去。
