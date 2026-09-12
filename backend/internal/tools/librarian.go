@@ -101,6 +101,25 @@ adaptation_of | sequel_to | spin_off_of | remake_of | expansion_of | references 
 会被拒绝：自指、两端有一端不存在、方向性关系成环（已有 A→B 再建 B→A）——
 成环会让读取侧看到互相矛盾的两个方向。`
 
+// attachLibraryLinkDesc 是 attach_library_link 的**模型可见**契约。
+// 与 upsert_relation 同理：媒体库的作业纪律必须写在模型真能读到的这一层。
+const attachLibraryLinkDesc = `把一个媒体库条目关联到作品节点（source 三选一：emby | komga | gameatlas）。
+
+何时用（**用户点名才挂**）：
+· 用户给出明确指令（"把库里那条 X 挂到 Y"）；
+· 你列了候选、用户确认了某一条。
+不要自作主张挂链——拿不准就先 search_library 搜出候选，列给用户挑。
+
+怎么填：
+· externalId：就是 search_library 返回的 key（形如 "emby:abc123"）冒号**后面**的部分，别自己编；
+· workId：缺省 = 当前节点（在作品页对话时不用传）；
+· titleHint：条目标题，建议带上（界面要显示）。
+
+规则（违反会被拒绝）：
+· 一条库条目只能挂在一个节点上（已挂别处再挂会报冲突）；
+· 同一节点可挂多条 Emby/Komga（影像 + OST、漫画版 + 小说版都算合理）；
+· workId 指向的节点必须存在。`
+
 // todoWriteDesc 是 todo_write 的**模型可见**契约。
 //
 // 注册与 ToolSchemas 共用这**同一份字符串**：以前纪律写在 NewFuncTool 的参数上，
@@ -804,6 +823,9 @@ func NewLibrarianRegistry(d LibrarianDeps) *Registry {
 			if err := json.Unmarshal(input, &p); err != nil {
 				return nil, err
 			}
+			if p.WorkID == "" {
+				p.WorkID, _ = d.Context["workId"].(string)
+			}
 			var url, hint *string
 			if p.URL != "" {
 				url = &p.URL
@@ -816,6 +838,96 @@ func NewLibrarianRegistry(d LibrarianDeps) *Registry {
 				return jsonOK(map[string]any{"ok": false, "message": err.Error()})
 			}
 			return jsonOK(map[string]any{"ok": true, "id": l.ID})
+		}))
+
+	r.Register(NewFuncTool("search_library",
+		func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+			var p struct {
+				Q      string `json:"q"`
+				Source string `json:"source"`
+			}
+			if err := json.Unmarshal(input, &p); err != nil {
+				return nil, err
+			}
+			manifest, err := d.Store.GetLibraryManifest()
+			if err != nil {
+				return jsonOK(map[string]any{"ok": false, "message": err.Error()})
+			}
+			if manifest == nil {
+				return jsonOK(map[string]any{"ok": false, "message": "媒体库清单还没有——请用户到「媒体库建议」页点一次「扫描媒体库」"})
+			}
+			q := strings.ToLower(strings.TrimSpace(p.Q))
+			source := strings.TrimSpace(p.Source)
+			type hit struct {
+				Key          string `json:"key"`
+				Title        string `json:"title"`
+				Kind         string `json:"kind"`
+				Format       string `json:"format,omitempty"`
+				Extra        string `json:"extra,omitempty"`
+				LinkedWorkID string `json:"linkedWorkId,omitempty"`
+			}
+			hits := make([]hit, 0, 20)
+			total := 0
+			for _, e := range manifest.Entries {
+				if source != "" && e.Source != source {
+					continue
+				}
+				if q != "" && !strings.Contains(strings.ToLower(e.Title), q) {
+					continue
+				}
+				total++
+				if len(hits) < 20 {
+					hits = append(hits, hit{Key: e.Key, Title: e.Title, Kind: e.Kind, Format: e.Format, Extra: e.Extra, LinkedWorkID: e.LinkedWorkID})
+				}
+			}
+			return jsonOK(map[string]any{"ok": true, "total": total, "hits": hits})
+		}))
+
+	r.Register(NewFuncTool("list_library",
+		func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+			var p struct {
+				Source string `json:"source"`
+				Limit  int    `json:"limit"`
+			}
+			if err := json.Unmarshal(input, &p); err != nil {
+				return nil, err
+			}
+			manifest, err := d.Store.GetLibraryManifest()
+			if err != nil {
+				return jsonOK(map[string]any{"ok": false, "message": err.Error()})
+			}
+			if manifest == nil {
+				return jsonOK(map[string]any{"ok": false, "message": "媒体库清单还没有——请用户到「媒体库建议」页点一次「扫描媒体库」"})
+			}
+			limit := p.Limit
+			if limit <= 0 || limit > 200 {
+				limit = 50
+			}
+			source := strings.TrimSpace(p.Source)
+			unlinked := make([]map[string]any, 0, limit)
+			totals := map[string]map[string]int{}
+			unlinkedTotal := 0
+			for _, e := range manifest.Entries {
+				t := totals[e.Source]
+				if t == nil {
+					t = map[string]int{}
+					totals[e.Source] = t
+				}
+				t["total"]++
+				if e.LinkedWorkID != "" {
+					t["linked"]++
+					continue
+				}
+				t["unlinked"]++
+				unlinkedTotal++
+				if source != "" && e.Source != source {
+					continue
+				}
+				if len(unlinked) < limit {
+					unlinked = append(unlinked, map[string]any{"key": e.Key, "source": e.Source, "title": e.Title, "kind": e.Kind, "format": e.Format})
+				}
+			}
+			return jsonOK(map[string]any{"ok": true, "unlinkedTotal": unlinkedTotal, "sources": totals, "items": unlinked})
 		}))
 
 	r.Register(NewFuncTool("todo_write",
@@ -974,7 +1086,7 @@ func ToolSchemas() []ToolSchema {
 			"id":       map[string]any{"type": "string"},
 			"parentId": map[string]any{"type": "string"},
 			"kind":     map[string]any{"type": "string", "description": "universe|series|work"},
-			"medium":   map[string]any{"type": "string"},
+			"medium":   map[string]any{"type": "string", "description": "game|movie|tv|manga|book|other"},
 			"title":    map[string]any{"type": "string"},
 			"status":   map[string]any{"type": "string", "description": "stub|draft|ready"},
 		}},
@@ -989,13 +1101,21 @@ func ToolSchemas() []ToolSchema {
 			"contentMd": map[string]any{"type": "string"},
 			"links":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 		}, Required: []string{"title"}},
-		{Name: "attach_library_link", Desc: "Attach an external media-library link (emby | komga | gameatlas) to a work node.", Props: map[string]any{
-			"workId":     map[string]any{"type": "string"},
+		{Name: "attach_library_link", Desc: attachLibraryLinkDesc, Props: map[string]any{
+			"workId":     map[string]any{"type": "string", "description": "缺省 = 当前节点"},
 			"source":     map[string]any{"type": "string", "description": "emby|komga|gameatlas"},
-			"externalId": map[string]any{"type": "string"},
+			"externalId": map[string]any{"type": "string", "description": "search_library 返回的 key 冒号后的部分"},
 			"url":        map[string]any{"type": "string"},
-			"titleHint":  map[string]any{"type": "string"},
+			"titleHint":  map[string]any{"type": "string", "description": "条目标题（显示用）"},
 		}, Required: []string{"source", "externalId"}},
+		{Name: "search_library", Desc: "在媒体库扫描清单里搜条目（Emby/Komga/GameAtlas）。返回 key（\"source:entryId\"）、标题、类型与是否已挂链；要挂链用 attach_library_link（externalId 就是 key 冒号后的部分）。清单缺失时提示用户先去「媒体库建议」页扫描。", Props: map[string]any{
+			"q":      map[string]any{"type": "string", "description": "标题关键词（子串匹配）"},
+			"source": map[string]any{"type": "string", "description": "可选：emby|komga|gameatlas"},
+		}, Required: []string{"q"}},
+		{Name: "list_library", Desc: "列媒体库清单里还没挂链的条目（可选只列某个 source；响应里含各源 总数/已挂/未挂 统计）。", Props: map[string]any{
+			"source": map[string]any{"type": "string", "description": "可选：emby|komga|gameatlas"},
+			"limit":  map[string]any{"type": "integer", "description": "默认 50，上限 200"},
+		}},
 		{Name: "todo_write", Desc: todoWriteDesc, Props: map[string]any{
 			"tasks": map[string]any{
 				"type": "array",

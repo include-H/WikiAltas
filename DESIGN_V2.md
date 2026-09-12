@@ -55,7 +55,7 @@ CREATE TABLE works (
   id            TEXT PRIMARY KEY,          -- UUIDv7
   parent_id     TEXT REFERENCES works(id),
   kind          TEXT NOT NULL,             -- universe | series | work
-  medium        TEXT,                      -- game | movie | tv | anime | manga | novel | book | other
+  medium        TEXT,                      -- game | movie | tv | manga | book | other
   title         TEXT NOT NULL,
   slug          TEXT NOT NULL UNIQUE,
   aliases_json  TEXT NOT NULL DEFAULT '[]',

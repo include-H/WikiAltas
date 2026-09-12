@@ -59,12 +59,12 @@ const { Text, Title } = Typography
 const { Configure } = AIChatInput
 
 /** 每个页面"当前选中的会话"（localStorage，值 = 会话 id）。 */
-/** 聊天框里选的思考等级（localStorage；跟设置页同一套 off|low|medium|high|xhigh|max）。 */
+/** 聊天框里选的思考等级（localStorage；跟设置页同一套 none|low|medium|high|xhigh|max）。 */
 const EFFORT_KEY = 'wikiatlas.effort'
 /** 档位：自动=不指定（用设置页的值）；其余原样进 Responses 的 `reasoning.effort`。 */
 const EFFORT_LEVELS: { value: string; label: string }[] = [
   { value: 'auto', label: '自动' },
-  { value: 'off', label: '关闭' },
+  { value: 'none', label: '关闭' },
   { value: 'low', label: '低' },
   { value: 'medium', label: '中' },
   { value: 'high', label: '高' },
@@ -146,7 +146,11 @@ export default function AiPanel({ workId, workTitle, docId }: Props) {
   const [renaming, setRenaming] = useState<Session | null>(null)
   const [renameValue, setRenameValue] = useState('')
   // 思考等级：聊天框里随手切；存本地，下一条工单生效
-  const [effort, setEffortState] = useState(() => localStorage.getItem(EFFORT_KEY) || 'auto')
+  // 旧词表迁移：本地存过 "off" 的（旧档位名）换成 "none"
+  const [effort, setEffortState] = useState(() => {
+    const v = localStorage.getItem(EFFORT_KEY) || 'auto'
+    return v === 'off' ? 'none' : v
+  })
   const setEffort = (v: string) => {
     setEffortState(v)
     localStorage.setItem(EFFORT_KEY, v)

@@ -82,9 +82,9 @@ func MediaFile(medium domain.Medium) string {
 	switch medium {
 	case domain.MediumGame:
 		return "media-game.md"
-	case domain.MediumMovie, domain.MediumTV, domain.MediumAnime:
+	case domain.MediumMovie, domain.MediumTV:
 		return "media-video.md"
-	case domain.MediumManga, domain.MediumNovel, domain.MediumBook:
+	case domain.MediumManga, domain.MediumBook:
 		return "media-book.md"
 	default:
 		return ""

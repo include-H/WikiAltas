@@ -202,6 +202,133 @@ body {
   border-top: 1px solid var(--semi-color-border);
 }
 
+/* ===== 作品页右侧栏「关联与媒体」=====
+   结构信息（作品关系 / 库外链）与媒体建议都收在这一栏，正文列保持干净。
+   收起态：右缘留一个竖向拉手。 */
+.work-side {
+  flex: none;
+  width: 340px;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--semi-color-border);
+  min-height: 0;
+}
+
+.work-side-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px 6px 14px;
+  border-bottom: 1px solid var(--semi-color-border);
+}
+
+.work-side-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 侧栏里的建议卡不再按正文列限宽居中 */
+.work-side .ga-suggest {
+  max-width: none;
+  margin: 0;
+}
+
+/* 窄栏适配：头部与行都允许换行——标题不再被动作按钮挤成一两个字 */
+.work-side .ga-suggest-head {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+.work-side .ga-suggest-row {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.work-side .ga-suggest-cover {
+  width: 52px;
+  height: 32px;
+}
+
+.work-side .ga-suggest-meta {
+  flex: 1 1 auto;
+  min-width: 110px;
+}
+
+.work-side-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.work-side-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.work-side-link {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--semi-color-text-0);
+  cursor: pointer;
+}
+
+.work-side-link:hover {
+  color: var(--semi-color-link);
+}
+
+.work-side-arrow {
+  color: var(--semi-color-text-2);
+  margin-right: 4px;
+}
+
+.work-side-cover {
+  flex: none;
+  width: 44px;
+  height: 28px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--semi-color-fill-1);
+}
+
+.work-side-cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.work-side-tab {
+  flex: none;
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 5px;
+  border: 1px solid var(--semi-color-border);
+  border-right: none;
+  border-radius: 8px 0 0 8px;
+  background: var(--semi-color-fill-0);
+  color: var(--semi-color-text-1);
+  cursor: pointer;
+  font-size: 12px;
+  writing-mode: vertical-rl;
+}
+
+.work-side-tab:hover {
+  color: var(--semi-color-link);
+}
+
 /* ===== Editor ===== */
 .md-editor {
   display: flex;
@@ -1893,6 +2020,14 @@ body[theme-mode='dark'] .ai-panel {
 
 /* ===== Home: Feishu-style document list ===== */
 .home-view {
+  flex: 1;
+  overflow: auto;
+}
+
+/* 限宽的是内容不是滚动容器（同设置页）：滚动条落在窗口边，内容居中 */
+.home-inner {
+  max-width: 960px;
+  margin: 0 auto;
   padding: 24px 32px 64px;
 }
 
@@ -2627,6 +2762,45 @@ body[theme-mode='dark'] .ai-panel {
   text-decoration: none;
 }
 
+/* 「媒体库发现」：没结果时的一行细条 + 忽略区 + 源状态提示 */
+.sweep-slim {
+  padding: 8px 16px;
+}
+
+.sweep-hints {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+
+.sweep-dismissed {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.sweep-toggle {
+  font-size: 12px;
+  color: var(--semi-color-text-2);
+  cursor: pointer;
+}
+
+.sweep-toggle:hover {
+  color: var(--semi-color-link);
+}
+
+.sweep-dismissed-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--semi-color-fill-1);
+}
+
 /* 「关联到 GameAtlas」弹窗里的结果列表 */
 .ga-link-list {
   max-height: 340px;
@@ -2635,4 +2809,61 @@ body[theme-mode='dark'] .ai-panel {
   flex-direction: column;
   gap: 8px;
   margin-top: 10px;
+}
+
+/* 设置页 · Emby 媒体库角色 */
+.emby-roles {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.emby-role-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.emby-role-name {
+  min-width: 140px;
+}
+
+/* 节点信息里的库外链行（一行一条链 + 解除） */
+.link-row {
+  display: flex;
+  align-items: center;
+}
+
+/* 建议池页 */
+.pool-page {
+  flex: 1;
+  overflow: auto;
+}
+
+.pool-inner {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 24px 32px 64px;
+}
+
+.pool-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.pool-head-btns {
+  display: flex;
+  gap: 8px;
+}
+
+.pool-card {
+  margin-top: 14px;
+}
+
+/* 来源分栏：平级页签（GameAtlas / Emby / Komga）点击切换；页签本体用 Semi Tabs 的 card 型 */
+.pool-tab-body {
+  margin-top: 4px;
 }

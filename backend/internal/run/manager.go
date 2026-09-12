@@ -36,6 +36,10 @@ type Manager struct {
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
+
+	// onWikiWritten 是"写完之后"的宿主钩子（建档/续写落库成功后触发一次，
+	// 异步执行）：WikiAltas 用它跑节点扫库——给新作品找媒体库里的卫星条目。
+	onWikiWritten func(workID string)
 }
 
 // NewManager creates a manager. Pass nil client to auto-resolve from env/store.
@@ -81,6 +85,19 @@ func (m *Manager) SetSkillRoot(root string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.skillRoot = root
+}
+
+// SetOnWikiWritten 注册"写完之后"的宿主钩子（见字段注释）。
+func (m *Manager) SetOnWikiWritten(fn func(workID string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onWikiWritten = fn
+}
+
+func (m *Manager) wikiWrittenHook() func(workID string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.onWikiWritten
 }
 
 // SkillRoot returns the effective skill root.
@@ -130,7 +147,7 @@ func (m *Manager) activeClientFor(effort string) llm.Client {
 		if err == nil {
 			e := st.LLM.ReasoningEffort
 			if e == "" {
-				e = "medium" // off/低/中/高/超高/max；默认中
+				e = "medium" // none/低/中/高/超高/max；默认中
 			}
 			if effort != "" {
 				e = effort // 本条工单的覆盖值优先
@@ -188,6 +205,12 @@ func (m *Manager) proxyURL() string {
 // ActiveClient 供设置页「测试连接」使用（与工单实际用的是同一套解析逻辑）。
 func (m *Manager) ActiveClient() llm.Client {
 	return m.activeClient()
+}
+
+// ActiveClientFor 同 ActiveClient，但让调用方覆盖思考等级——媒体库这类
+// 机械判定（层级分类、题名变体、相关性判官）用 "none" 直出，快一个量级。
+func (m *Manager) ActiveClientFor(effort string) llm.Client {
+	return m.activeClientFor(effort)
 }
 
 // ActiveCount 正在执行的工单数（并发闸门里占着位子的）。

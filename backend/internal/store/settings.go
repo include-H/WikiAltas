@@ -89,6 +89,96 @@ func mergeMap(dst, src map[string]any) {
 	}
 }
 
+// GetSettingValue 读一个通用 KV（媒体库匹配清单等缓存用）。
+func (s *Store) GetSettingValue(key string) (string, bool) {
+	var raw sql.NullString
+	if err := s.DB.QueryRow(`SELECT value FROM settings WHERE key = ?`, key).Scan(&raw); err != nil || !raw.Valid {
+		return "", false
+	}
+	return raw.String, true
+}
+
+// SetSettingValue 写一个通用 KV。
+func (s *Store) SetSettingValue(key, value string) error {
+	_, err := s.DB.Exec(`INSERT INTO settings (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
+}
+
+const (
+	libraryManifestKVKey  = "library_manifest"
+	libraryAiSuggestKVKey = "library_ai_suggestions"
+	komgaJudgmentsKVKey   = "komga_judgments"
+)
+
+// GetLibraryManifest 读媒体库扫描清单；没有（或坏了）返回 nil。
+func (s *Store) GetLibraryManifest() (*domain.LibraryManifest, error) {
+	raw, ok := s.GetSettingValue(libraryManifestKVKey)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var m domain.LibraryManifest
+	if err := json.Unmarshal([]byte(raw), &m); err != nil || m.ScannedAt == "" {
+		return nil, nil
+	}
+	return &m, nil
+}
+
+// SaveLibraryManifest 写媒体库扫描清单。
+func (s *Store) SaveLibraryManifest(m *domain.LibraryManifest) error {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return s.SetSettingValue(libraryManifestKVKey, string(b))
+}
+
+// GetLibraryAiSuggestions 读「AI 对一遍」的建议；没有返回 nil。
+// 注意：建议列表为空不代表记录不存在——忽略记录（Dismissed）也住在同一条里，
+// 不能因为 suggestions 空就把整条吞掉（真实踩到：只 dismiss 掉最后一条建议后，dismissed 读没了）。
+func (s *Store) GetLibraryAiSuggestions() (*domain.LibraryAiSuggestions, error) {
+	raw, ok := s.GetSettingValue(libraryAiSuggestKVKey)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var out domain.LibraryAiSuggestions
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, nil
+	}
+	return &out, nil
+}
+
+// SaveLibraryAiSuggestions 写「AI 对一遍」的建议。
+func (s *Store) SaveLibraryAiSuggestions(out *domain.LibraryAiSuggestions) error {
+	b, err := json.Marshal(out)
+	if err != nil {
+		return err
+	}
+	return s.SetSettingValue(libraryAiSuggestKVKey, string(b))
+}
+
+// GetKomgaJudgments 读 Komga 系列层级的 LLM 判定缓存；没有返回 nil。
+func (s *Store) GetKomgaJudgments() (*domain.KomgaJudgments, error) {
+	raw, ok := s.GetSettingValue(komgaJudgmentsKVKey)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var out domain.KomgaJudgments
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, nil
+	}
+	return &out, nil
+}
+
+// SaveKomgaJudgments 写 Komga 系列层级的判定缓存。
+func (s *Store) SaveKomgaJudgments(out *domain.KomgaJudgments) error {
+	b, err := json.Marshal(out)
+	if err != nil {
+		return err
+	}
+	return s.SetSettingValue(komgaJudgmentsKVKey, string(b))
+}
+
 // HasAPIKey reports whether an API key is stored (never returns the key).
 func (s *Store) HasAPIKey() bool {
 	var raw sql.NullString

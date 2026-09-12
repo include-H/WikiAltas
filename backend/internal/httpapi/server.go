@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
 
 	"wikiatlas/backend/internal/domain"
 	"wikiatlas/backend/internal/run"
@@ -18,11 +19,21 @@ type Server struct {
 	store *store.Store
 	runs  *run.Manager
 	mux   *http.ServeMux
+	// gaCatalog 是 GameAtlas 目录的进程内缓存（首次全量、之后增量）
+	gaCatalog gameAtlasCatalog
+	// komgaCatalog 是 Komga 条目集的进程内缓存（TTL 两分钟）
+	komgaCatalog komgaCatalog
+	// 媒体库后台扫描的运行态
+	scanMu     sync.Mutex
+	scanStopCh chan struct{}
+	// 节点扫库（写完之后 → 关联媒体）：并发闸 + 建议 KV 的读改写锁
+	sweepSem      chan struct{}
+	suggestionsMu sync.Mutex
 }
 
 // New builds the API server.
 func New(st *store.Store, runs *run.Manager) *Server {
-	s := &Server{store: st, runs: runs, mux: http.NewServeMux()}
+	s := &Server{store: st, runs: runs, mux: http.NewServeMux(), sweepSem: make(chan struct{}, 2)}
 	s.routes()
 	return s
 }
@@ -107,6 +118,33 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/library/gameatlas/search", s.handleGameAtlasSearch)
 	m.HandleFunc("POST /api/library/gameatlas/link", s.handleGameAtlasLink)
 	m.HandleFunc("DELETE /api/library/gameatlas/link", s.handleGameAtlasUnlink)
+	// 媒体库：Emby（库角色在设置里标：正片 / 混杂内容）
+	m.HandleFunc("GET /api/library/emby/views", s.handleEmbyViews)
+	m.HandleFunc("GET /api/library/emby/suggest", s.handleEmbySuggest)
+	m.HandleFunc("POST /api/library/emby/archive", s.handleEmbyArchive)
+	m.HandleFunc("GET /api/library/emby/related", s.handleEmbyRelated)
+	m.HandleFunc("GET /api/library/emby/search", s.handleEmbySearch)
+	m.HandleFunc("POST /api/library/emby/link", s.handleEmbyLink)
+	m.HandleFunc("DELETE /api/library/emby/link", s.handleEmbyUnlink)
+	// 媒体库：扫描清单 / 建议池 / AI 建议
+	m.HandleFunc("GET /api/library/pool", s.handleLibraryPool)
+	m.HandleFunc("POST /api/library/scan", s.handleLibraryScan)
+	m.HandleFunc("POST /api/library/ignore", s.handleLibraryIgnore)
+	m.HandleFunc("DELETE /api/library/ignore", s.handleLibraryUnignore)
+	m.HandleFunc("POST /api/library/ai-suggest", s.handleLibraryAiSuggest)
+	// 媒体库：节点扫库（写完之后 → 给这个节点找媒体：游戏/影视/解析/攻略/漫画）
+	m.HandleFunc("GET /api/library/node-sweep", s.handleNodeSweepRead)
+	m.HandleFunc("POST /api/library/node-sweep", s.handleNodeSweepRun)
+	m.HandleFunc("POST /api/library/node-sweep/dismiss", s.handleNodeSweepDismiss)
+	m.HandleFunc("DELETE /api/library/node-sweep/dismiss", s.handleNodeSweepRestore)
+	// 媒体库：Komga（漫画 / 小说；判型来自书本格式）
+	m.HandleFunc("GET /api/library/komga/suggest", s.handleKomgaSuggest)
+	m.HandleFunc("POST /api/library/komga/archive", s.handleKomgaArchive)
+	m.HandleFunc("GET /api/library/komga/search", s.handleKomgaSearch)
+	m.HandleFunc("POST /api/library/komga/link", s.handleKomgaLink)
+	m.HandleFunc("DELETE /api/library/komga/link", s.handleKomgaUnlink)
+	m.HandleFunc("POST /api/library/komga/push", s.handleKomgaPush)
+	m.HandleFunc("GET /api/library/komga/cover", s.handleKomgaCover)
 
 	// search
 	m.HandleFunc("GET /api/search", s.handleSearch)
@@ -228,6 +266,19 @@ func (s *Server) handleGetWork(w http.ResponseWriter, r *http.Request) {
 	detail.Relations = []domain.Relation{}
 	if links, err := s.store.ListLibraryLinksByWork(id); err == nil {
 		detail.LibraryLinks = links
+	}
+	// 库外链带上封面小图（展示用）：从扫描清单按 source:entryId 补齐，不轰库。
+	if m, err := s.store.GetLibraryManifest(); err == nil && m != nil {
+		cover := make(map[string]string, len(m.Entries))
+		for _, e := range m.Entries {
+			if e.CoverImage != "" {
+				cover[e.Key] = e.CoverImage
+			}
+		}
+		for i := range detail.LibraryLinks {
+			l := &detail.LibraryLinks[i]
+			l.CoverImage = cover[string(l.Source)+":"+l.ExternalID]
+		}
 	}
 	if rels, err := s.store.ListRelationsByWork(id); err == nil {
 		detail.Relations = rels

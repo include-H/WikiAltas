@@ -19,9 +19,7 @@ const (
 	MediumGame  Medium = "game"
 	MediumMovie Medium = "movie"
 	MediumTV    Medium = "tv"
-	MediumAnime Medium = "anime"
 	MediumManga Medium = "manga"
-	MediumNovel Medium = "novel"
 	MediumBook  Medium = "book"
 	MediumOther Medium = "other"
 )
@@ -88,6 +86,109 @@ var DirectionalRelationTypes = map[RelationType]bool{
 	RelationSpinOffOf:    true,
 	RelationRemakeOf:     true,
 	RelationExpansionOf:  true,
+}
+
+// EmbyLibraryRole 是用户在设置里给一个 Emby 媒体库标的角色（2026-09-12）：
+// work = 正片（喂「建档建议」）；mixed = 混杂内容（喂「关联到节点」的候选）。
+// 键值对不上（改名/重建）时按 name 兜底匹配。
+type EmbyLibraryRole struct {
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name"`
+	Role string `json:"role"` // work | mixed
+}
+
+// 设置里的合法角色值。
+const (
+	EmbyLibraryRoleWork  = "work"
+	EmbyLibraryRoleMixed = "mixed"
+)
+
+// LibraryManifest 是媒体库的后台扫描快照：库里有哪些条目、各自挂没挂链。
+// 纯确定性数据（零 LLM 成本）；建议池、Altas 的库工具都读这份清单。
+type LibraryManifest struct {
+	ScannedAt         string                 `json:"scannedAt"`
+	PreviousScannedAt string                 `json:"previousScannedAt,omitempty"`
+	Entries           []LibraryManifestEntry `json:"entries"`
+	// 忽略（持久化，扫描时保留）：单条按 key="source:entryId"；整组按容器。
+	IgnoredKeys   []string       `json:"ignoredKeys,omitempty"`
+	IgnoredGroups []IgnoredGroup `json:"ignoredGroups,omitempty"`
+}
+
+type LibraryManifestEntry struct {
+	Key            string  `json:"key"` // source:entryId
+	Source         string  `json:"source"`
+	EntryID        string  `json:"entryId"`
+	Title          string  `json:"title"`
+	TitleAlt       *string `json:"titleAlt,omitempty"`
+	ReleaseDate    *string `json:"releaseDate,omitempty"`
+	CoverImage     string  `json:"coverImage,omitempty"`
+	URL            string  `json:"url"`
+	Kind           string  `json:"kind"`             // tv|movie|game|book|collection…
+	Format         string  `json:"format,omitempty"` // comic|novel（Komga）
+	Extra          string  `json:"extra,omitempty"`  // 给 LLM 的补充：GA系列/合集成员…
+	ContainerKey   string  `json:"containerKey"`     // 容器（库/系列/合集）内键
+	ContainerTitle string  `json:"containerTitle"`
+	ContainerKind  string  `json:"containerKind,omitempty"`
+	LinkedWorkID   string  `json:"linkedWorkId,omitempty"`
+	FirstSeenAt    string  `json:"firstSeenAt"`
+}
+
+// IgnoredGroup 是被整组忽略的容器。
+type IgnoredGroup struct {
+	Source         string `json:"source"`
+	ContainerKey   string `json:"containerKey"`
+	ContainerTitle string `json:"containerTitle"`
+}
+
+// LibraryAiSuggestions 是 AI 建议清单（「AI 对一遍」与「写完后节点扫库」共用）：只建议，不执行。
+type LibraryAiSuggestions struct {
+	GeneratedAt string                `json:"generatedAt"`
+	Model       string                `json:"model"`
+	Suggestions []LibraryAiSuggestion `json:"suggestions"`
+	// Dismissed 是节点页里逐条忽略过的建议（per-node，不等于池子的全局忽略）：
+	// 再扫同一节点时不再重新提起，但不影响该条目在别处的候选资格。
+	Dismissed []LibraryAiDismissal `json:"dismissed,omitempty"`
+}
+
+type LibraryAiSuggestion struct {
+	Key          string  `json:"key"` // source:entryId
+	Source       string  `json:"source"`
+	Action       string  `json:"action"` // link | archive | ignore
+	TargetNodeID string  `json:"targetNodeId,omitempty"`
+	Confidence   float64 `json:"confidence"`
+	Reason       string  `json:"reason"`
+	// Origin 标记建议出处：sweep = 节点扫库（写完后触发）。「AI 对一遍」重刷时保留 sweep 建议。
+	Origin string `json:"origin,omitempty"`
+	// 显示字段：节点页秒开不重拉库（池子那边仍以扫描清单为准）。
+	Title      string `json:"title,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+	Format     string `json:"format,omitempty"`
+	Extra      string `json:"extra,omitempty"`
+	CoverImage string `json:"coverImage,omitempty"`
+	URL        string `json:"url,omitempty"`
+}
+
+// LibraryAiDismissal 是节点页被忽略的一条建议（key 对某个 workId 不再提起）。
+type LibraryAiDismissal struct {
+	WorkID string `json:"workId"`
+	Key    string `json:"key"`
+	Source string `json:"source"`
+	Title  string `json:"title"`
+}
+
+// KomgaJudgments 是 LLM 对 Komga 系列层级的判定缓存（扫描时刷新）：
+// series=分卷作品（合并成系列一条、跳系列页）；drawer=独立单册抽屉（逐本拆开、跳书页）。
+// FP 是判定时的书单指纹——书单没变就不重新判，所以扫描常态仍是零 LLM。
+type KomgaJudgments struct {
+	GeneratedAt string                   `json:"generatedAt"`
+	Model       string                   `json:"model"`
+	Items       map[string]KomgaJudgment `json:"items"`
+}
+
+type KomgaJudgment struct {
+	Kind     string `json:"kind"` // series | drawer
+	FP       string `json:"fp"`
+	JudgedAt string `json:"judgedAt,omitempty"`
 }
 
 type LibrarySource string
@@ -195,7 +296,9 @@ type LibraryLink struct {
 	ExternalID string        `json:"externalId"`
 	URL        *string       `json:"url"`
 	TitleHint  *string       `json:"titleHint"`
-	CreatedAt  string        `json:"createdAt"`
+	// CoverImage 是展示用字段：读接口从扫描清单补上（不落库）；清单里没有就没有。
+	CoverImage string `json:"coverImage,omitempty"`
+	CreatedAt  string `json:"createdAt"`
 }
 
 // Run is a librarian work order.
@@ -266,7 +369,7 @@ type Settings struct {
 		APIKeyConfigured bool     `json:"apiKeyConfigured"`
 		Temperature      *float64 `json:"temperature,omitempty"`
 		MaxTokens        *int     `json:"maxTokens,omitempty"`
-		// ReasoningEffort 思考等级：off | low | medium | high | xhigh | max（空=走默认 medium）
+		// ReasoningEffort 思考等级：none | low | medium | high | xhigh | max（空=走默认 medium）
 		ReasoningEffort string `json:"reasoningEffort,omitempty"`
 		// Protocol 协议标识。留空 = 默认（responses）。这是"以后要加新协议"的位置：
 		// 加协议只动 llm.NewClient 的分派，上层与前端不感知。
@@ -282,6 +385,10 @@ type Settings struct {
 		KomgaAPIKey     *string `json:"komgaApiKey,omitempty"`
 		GameAtlasURL    *string `json:"gameatlasUrl,omitempty"`
 		GameAtlasAPIKey *string `json:"gameatlasApiKey,omitempty"`
+		// EmbyLibraryRoles 是用户给 Emby 各媒体库标的角色（正片/混杂内容）。
+		EmbyLibraryRoles []EmbyLibraryRole `json:"embyLibraryRoles,omitempty"`
+		// ScanIntervalMinutes 是媒体库后台扫描间隔（分钟；nil=默认 360，0=关闭）。
+		ScanIntervalMinutes *int `json:"scanIntervalMinutes,omitempty"`
 		// 是否已配置（响应里只回标记，不回密钥原文）
 		EmbyAPIKeyConfigured      bool `json:"embyApiKeyConfigured"`
 		KomgaAPIKeyConfigured     bool `json:"komgaApiKeyConfigured"`
@@ -385,7 +492,7 @@ type CreateRunBody struct {
 	// 面板刷新后按它召回同一段对话；留空按 default 处理。列已存在于 runs 表。
 	Workspace string      `json:"workspace"`
 	Context   *RunContext `json:"context"`
-	// ReasoningEffort 思考等级覆盖（off|low|medium|high|xhigh|max）：聊天框里选的档位，
+	// ReasoningEffort 思考等级覆盖（none|low|medium|high|xhigh|max）：聊天框里选的档位，
 	// 留空用设置页的值。只影响本条工单。
 	ReasoningEffort string `json:"reasoningEffort"`
 }

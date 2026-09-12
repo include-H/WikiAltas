@@ -7,6 +7,7 @@ import DocView from './views/DocView'
 import RunList from './views/RunList'
 import SettingsView from './views/SettingsView'
 import LoginView from './views/LoginView'
+import LibraryPool from './views/LibraryPool'
 
 export default function App() {
   return (
@@ -25,6 +26,7 @@ export default function App() {
             <Route path="/w/:id/folder" element={<WorkView />} />
             <Route path="/w/:id/folder/:docId" element={<DocView />} />
             <Route path="/runs" element={<RunList />} />
+            <Route path="/library" element={<LibraryPool />} />
             <Route path="/settings" element={<SettingsView />} />
             <Route path="/login" element={<LoginView />} />
             <Route path="*" element={<Navigate to="/" replace />} />

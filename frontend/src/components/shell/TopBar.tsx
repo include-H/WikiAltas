@@ -63,10 +63,12 @@ export default function TopBar() {
   const onDoc = loc.pathname.startsWith('/w/')
   const onSettings = loc.pathname === '/settings'
   const onRuns = loc.pathname === '/runs'
+  const onLibrary = loc.pathname === '/library'
 
   const routes = useMemo(() => {
     if (onSettings) return [ROOT_CRUMB, { name: '设置' }]
     if (onRuns) return [ROOT_CRUMB, { name: 'Altas 工单' }]
+    if (onLibrary) return [ROOT_CRUMB, { name: '媒体库建议' }]
     if (!onDoc || path.length === 0) return [ROOT_CRUMB, { name: '首页' }]
     const crumbs: { name: string; path?: string }[] = [
       ROOT_CRUMB,
@@ -77,7 +79,7 @@ export default function TopBar() {
       crumbs.push({ name: '资料夹' })
     }
     return crumbs
-  }, [loc.pathname, onDoc, onRuns, onSettings, path])
+  }, [loc.pathname, onDoc, onRuns, onSettings, onLibrary, path])
 
   const updatedLabel = current ? relativeTime(current.updatedAt) : ''
 

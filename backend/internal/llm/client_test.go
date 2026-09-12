@@ -92,3 +92,20 @@ func TestNewFunctionToolSchema(t *testing.T) {
 		t.Fatal("missing parameters")
 	}
 }
+
+// 旧词表迁移：设置 / 工单里存过 "off"（旧档位名）的，在构造入口归一成 "none"——
+// 线上协议只认 none（真踩到：媒体库判定传 off 被网关 400 拒绝，整次判定静默退回旧缓存）。
+func TestNewClientNormalizesLegacyOffEffort(t *testing.T) {
+	c, err := NewClient(Config{APIKey: "k", Model: "m", ReasoningEffort: "off"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc, ok := c.(*ResponsesClient); !ok || rc.cfg.ReasoningEffort != "none" {
+		t.Fatalf("legacy off should normalize to none, got %#v", c)
+	}
+	// 其余档位原样保留
+	c2, _ := NewClient(Config{APIKey: "k", Model: "m", ReasoningEffort: "high"})
+	if rc := c2.(*ResponsesClient); rc.cfg.ReasoningEffort != "high" {
+		t.Fatalf("effort = %q, want high", rc.cfg.ReasoningEffort)
+	}
+}

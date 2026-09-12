@@ -49,7 +49,7 @@ func TestFilesForCreateWikiGame(t *testing.T) {
 func TestFilesForCreateWikiVideoMedia(t *testing.T) {
 	root := writeSkillFixture(t)
 	l := skill.NewLoader(root)
-	for _, med := range []domain.Medium{domain.MediumMovie, domain.MediumTV, domain.MediumAnime} {
+	for _, med := range []domain.Medium{domain.MediumMovie, domain.MediumTV} {
 		files, err := l.FilesForCreateWiki(med)
 		if err != nil {
 			t.Fatalf("%s: %v", med, err)
@@ -63,7 +63,7 @@ func TestFilesForCreateWikiVideoMedia(t *testing.T) {
 func TestFilesForCreateWikiBookMedia(t *testing.T) {
 	root := writeSkillFixture(t)
 	l := skill.NewLoader(root)
-	for _, med := range []domain.Medium{domain.MediumManga, domain.MediumNovel, domain.MediumBook} {
+	for _, med := range []domain.Medium{domain.MediumManga, domain.MediumBook} {
 		files, err := l.FilesForCreateWiki(med)
 		if err != nil {
 			t.Fatalf("%s: %v", med, err)

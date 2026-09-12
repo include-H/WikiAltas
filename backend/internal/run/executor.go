@@ -740,6 +740,15 @@ func (m *Manager) executeLLM(ctx context.Context, runID string, intent domain.Ru
 	_ = m.store.CompleteRun(runID, map[string]any{
 		"summary": summary, "intent": string(intent), "wroteContent": wroteContent,
 	})
+
+	// 写完之后：宿主钩子（节点扫库——给新作品找媒体库里的卫星）。
+	// 异步、不占 worker 槽位；钩子自己保证 best-effort（没配模型/库就静默跳过）。
+	if wroteContent && workID != "" &&
+		(intent == domain.RunIntentCreateWiki || intent == domain.RunIntentContinueWiki) {
+		if hook := m.wikiWrittenHook(); hook != nil {
+			go hook(workID)
+		}
+	}
 }
 
 func (m *Manager) applyQualityGate(em *respEmitter, workID, docID string) {

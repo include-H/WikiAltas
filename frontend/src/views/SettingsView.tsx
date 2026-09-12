@@ -11,8 +11,8 @@ import {
   Toast,
   Typography,
 } from '@douyinfe/semi-ui'
-import type { RuntimeInfo, Settings } from '../types'
-import { getRuntime, getSettings, putSettings, testLLM } from '../lib/api'
+import type { EmbyLibraryView, RuntimeInfo, Settings } from '../types'
+import { getEmbyViews, getRuntime, getSettings, putSettings, testLLM } from '../lib/api'
 import { useAppStore } from '../lib/store'
 import { useNavigate } from 'react-router-dom'
 
@@ -40,6 +40,7 @@ interface FormState {
   adminUsername: string
   newNodeVisibility: 'public' | 'private'
   skillRoot: string
+  scanInterval: string
 }
 
 const EMPTY_FORM: FormState = {
@@ -64,6 +65,7 @@ const EMPTY_FORM: FormState = {
   adminUsername: 'admin',
   newNodeVisibility: 'private',
   skillRoot: '',
+  scanInterval: '360',
 }
 
 function toForm(st: Settings): FormState {
@@ -85,6 +87,7 @@ function toForm(st: Settings): FormState {
     adminUsername: st.admin?.username ?? 'admin',
     newNodeVisibility: st.admin?.newNodeVisibility ?? 'private',
     skillRoot: st.skillRoot ?? '',
+    scanInterval: st.library.scanIntervalMinutes != null ? String(st.library.scanIntervalMinutes) : '360',
   }
 }
 
@@ -99,6 +102,8 @@ export default function SettingsView() {
   const { me } = useAppStore()
   const nav = useNavigate()
   const [adminPassword, setAdminPassword] = useState('')
+  const [embyViews, setEmbyViews] = useState<EmbyLibraryView[] | null>(null)
+  const [embyRoles, setEmbyRoles] = useState<Record<string, 'work' | 'mixed' | ''>>({})
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -117,6 +122,32 @@ export default function SettingsView() {
   useEffect(() => {
     if (me.authed) void load()
   }, [load, me.authed])
+
+  const loadEmbyViews = useCallback(async () => {
+    try {
+      const res = await getEmbyViews()
+      setEmbyViews(res.views ?? [])
+    } catch {
+      setEmbyViews([])
+    }
+  }, [])
+
+  // Emby 地址配好后自动拉一次库清单；拉到后把已存的角色映射到界面
+  useEffect(() => {
+    if (!me.authed || !settings?.library.embyUrl) return
+    void loadEmbyViews()
+  }, [me.authed, settings?.library.embyUrl, loadEmbyViews])
+
+  useEffect(() => {
+    if (!embyViews || !settings) return
+    const roles = settings.library.embyLibraryRoles ?? []
+    const next: Record<string, 'work' | 'mixed' | ''> = {}
+    for (const v of embyViews) {
+      const hit = roles.find((r) => (r.id && r.id === v.id) || r.name === v.name)
+      next[v.id] = hit ? hit.role : ''
+    }
+    setEmbyRoles(next)
+  }, [embyViews, settings])
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }))
@@ -142,6 +173,15 @@ export default function SettingsView() {
           komgaApiKey: form.komgaApiKey || undefined,
           gameatlasUrl: form.gameatlasUrl || undefined,
           gameatlasApiKey: form.gameatlasApiKey || undefined,
+          // 库清单没拉到就不要提交这个字段（非 nil = 整体替换，会把已有角色清掉）
+          ...(embyViews !== null
+            ? {
+                embyLibraryRoles: embyViews
+                  .filter((v) => embyRoles[v.id])
+                  .map((v) => ({ id: v.id, name: v.name, role: embyRoles[v.id] as 'work' | 'mixed' })),
+              }
+            : {}),
+          scanIntervalMinutes: form.scanInterval === '' ? undefined : Number(form.scanInterval),
         },
         runs: {
           expireDays: form.expireDays,
@@ -160,6 +200,7 @@ export default function SettingsView() {
       setAdminPassword('')
       Toast.success('已保存（下一个工单即生效，无需重启）')
       setRuntime(await getRuntime().catch(() => null))
+      void loadEmbyViews()
     } catch (e) {
       Toast.error(e instanceof Error ? e.message : '保存失败')
     } finally {
@@ -250,7 +291,7 @@ export default function SettingsView() {
             <div className="settings-field">
               <span className="settings-label">思考等级</span>
               <Select<string> value={form.effort} onChange={(v) => set('effort', String(v))} style={{ width: '100%' }}>
-                <Select.Option value="off">关闭</Select.Option>
+                <Select.Option value="none">关闭</Select.Option>
                 <Select.Option value="low">低</Select.Option>
                 <Select.Option value="medium">中</Select.Option>
                 <Select.Option value="high">高</Select.Option>
@@ -434,34 +475,107 @@ export default function SettingsView() {
           </Text>
         </Card>
 
-        <Card title="媒体库（后置能力）" className="settings-card">
+        <Card title="媒体库" className="settings-card">
           <Banner
             type="info"
             closeIcon={null}
-            description="首期不做 Emby / Komga / GameAtlas 同步，这里先存凭据；同步入口开放后即可直接用。"
+            description="Emby（正片建档 / 混杂关联）、GameAtlas（建档 / 关联 / 反哺）、Komga（漫画小说建档 / 关联 / 反哺简介）均已接入。"
           />
           <div className="settings-field-inline">
             <div className="settings-field">
               <span className="settings-label">Emby URL</span>
-              <Input value={form.embyUrl} onChange={(v) => set('embyUrl', v)} />
+              <Input value={form.embyUrl} onChange={(v) => set('embyUrl', v)} placeholder="http://192.168.1.4:8081/emby" />
             </div>
             <div className="settings-field">
               <span className="settings-label">
-                Emby Key {keyTag(settings?.library.embyApiKeyConfigured)}
+                Emby API Key {keyTag(settings?.library.embyApiKeyConfigured)}
               </span>
-              <Input mode="password" value={form.embyApiKey} onChange={(v) => set('embyApiKey', v)} placeholder="留空不修改" />
+              <Input
+                mode="password"
+                value={form.embyApiKey}
+                onChange={(v) => set('embyApiKey', v)}
+                placeholder={settings?.library.embyApiKeyConfigured ? '已配置，留空不修改' : '在 Emby 后台 高级→安全 里生成'}
+              />
             </div>
+          </div>
+          <div className="settings-field" style={{ marginTop: 14 }}>
+            <span className="settings-label">Emby 媒体库角色</span>
+            <Text type="tertiary" size="small">
+              正片（Work）：集合页给「建议建档」；混杂内容（Mixed）：节点页给「关联候选」（第九艺术/解析这类）。
+            </Text>
+            {embyViews === null ? (
+              <Text type="tertiary" size="small">
+                保存 Emby 地址与 Key 后，
+                <Button size="small" theme="borderless" onClick={() => void loadEmbyViews()}>
+                  刷新库清单
+                </Button>
+              </Text>
+            ) : embyViews.length === 0 ? (
+              <Text type="tertiary" size="small">
+                没拉到媒体库（检查地址与 Key）。
+                <Button size="small" theme="borderless" onClick={() => void loadEmbyViews()}>
+                  重试
+                </Button>
+              </Text>
+            ) : (
+              <>
+                <div className="emby-roles">
+                  {embyViews.map((v) => (
+                    <div className="emby-role-row" key={v.id}>
+                      <span className="emby-role-name">{v.name}</span>
+                      <Text type="tertiary" size="small">
+                        {v.collectionType || '—'}
+                      </Text>
+                      <Select<string>
+                        size="small"
+                        value={embyRoles[v.id] ?? ''}
+                        onChange={(val) =>
+                          setEmbyRoles((prev) => ({ ...prev, [v.id]: String(val ?? '') as 'work' | 'mixed' | '' }))
+                        }
+                        style={{ width: 170 }}
+                      >
+                        <Select.Option value="">不参与</Select.Option>
+                        <Select.Option value="work">正片（建档建议）</Select.Option>
+                        <Select.Option value="mixed">混杂内容（关联）</Select.Option>
+                      </Select>
+                    </div>
+                  ))}
+                </div>
+                <Button size="small" theme="borderless" onClick={() => void loadEmbyViews()}>
+                  刷新库清单
+                </Button>
+              </>
+            )}
+          </div>
+          <div className="settings-field" style={{ marginTop: 14 }}>
+            <span className="settings-label">媒体库后台扫描间隔（分钟）</span>
+            <InputNumber
+              value={form.scanInterval === '' ? undefined : Number(form.scanInterval)}
+              onChange={(v) => set('scanInterval', v == null ? '' : String(v))}
+              min={0}
+              max={10080}
+              step={60}
+              style={{ width: 220 }}
+            />
+            <Text type="tertiary" size="small">
+              每 N 分钟自动扫一次媒体库清单（建议池读它）；0 = 关闭自动扫描、只手动扫。
+            </Text>
           </div>
           <div className="settings-field-inline">
             <div className="settings-field">
               <span className="settings-label">Komga URL</span>
-              <Input value={form.komgaUrl} onChange={(v) => set('komgaUrl', v)} />
+              <Input value={form.komgaUrl} onChange={(v) => set('komgaUrl', v)} placeholder="http://192.168.1.4:8082（带不带 /api/v1 都行）" />
             </div>
             <div className="settings-field">
               <span className="settings-label">
-                Komga Key {keyTag(settings?.library.komgaApiKeyConfigured)}
+                Komga API Key {keyTag(settings?.library.komgaApiKeyConfigured)}
               </span>
-              <Input mode="password" value={form.komgaApiKey} onChange={(v) => set('komgaApiKey', v)} placeholder="留空不修改" />
+              <Input
+                mode="password"
+                value={form.komgaApiKey}
+                onChange={(v) => set('komgaApiKey', v)}
+                placeholder={settings?.library.komgaApiKeyConfigured ? '已配置，留空不修改' : '在 Komga 用户设置里生成 API Key'}
+              />
             </div>
           </div>
           <div className="settings-field-inline">

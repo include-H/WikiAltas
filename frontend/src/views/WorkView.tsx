@@ -8,7 +8,7 @@ import OutlinePane from '../components/shell/OutlinePane'
 import MarkdownEditor from '../components/editor/MarkdownEditor'
 import DocActions from '../components/editor/DocActions'
 import PendingRevisions from '../components/editor/PendingRevisions'
-import GameAtlasSuggest from '../components/library/GameAtlasSuggest'
+import WorkSidePanel from '../components/editor/WorkSidePanel'
 import { parseOutline } from '../lib/mdOutline'
 import { useLiveRefresh } from '../lib/useLiveRefresh'
 
@@ -139,7 +139,6 @@ export default function WorkView() {
       />
       <div className="work-content">
         {me.authed && <PendingRevisions workId={work.id} onReload={load} />}
-        <GameAtlasSuggest work={work} />
         <MarkdownEditor
           key={work.id}
           title={work.title}
@@ -167,6 +166,9 @@ export default function WorkView() {
           onDraftChange={setOutlineMd}
         />
       </div>
+      {me.authed && (
+        <WorkSidePanel work={work} links={links} onLinked={() => void load({ silent: true })} />
+      )}
     </div>
   )
 }

@@ -54,6 +54,10 @@ func main() {
 	defer mgr.Stop()
 
 	srv := httpapi.New(st, mgr)
+	// 写完之后：节点扫库（给新作品找媒体库条目，产出待确认的挂链建议）
+	mgr.SetOnWikiWritten(srv.SweepLibraryForWork)
+	srv.Start()
+	defer srv.Stop()
 	server := &http.Server{
 		Addr:    *addr,
 		Handler: srv.Handler(),

@@ -11,7 +11,9 @@ import (
 
 // fakeGA 是内嵌在 WikiAltas 接口测试里的 GameAtlas 仿真。
 type fakeGA struct {
-	lastPush map[string]any
+	lastPush    map[string]any
+	allCalls    int
+	recentCalls int
 }
 
 func newFakeGA(t *testing.T) (*httptest.Server, *fakeGA) {
@@ -48,10 +50,19 @@ func newFakeGA(t *testing.T) (*httptest.Server, *fakeGA) {
 			writeEnv(w, http.StatusUnauthorized, false, "需要管理员登录", nil)
 			return
 		}
+		f.allCalls++
 		writeEnv(w, http.StatusOK, true, "", []map[string]any{
 			{"public_id": "abc12345", "title": "使命召唤：无限战争", "series": map[string]any{"id": 7, "name": "使命召唤"}},
 			{"public_id": "def67890", "title": "一条不该出现的游戏", "series": map[string]any{"id": 8, "name": "别对不上号"}},
 		})
+	})
+	mux.HandleFunc("GET /api/games/recent", func(w http.ResponseWriter, r *http.Request) {
+		if !hasSession(r) {
+			writeEnv(w, http.StatusUnauthorized, false, "需要管理员登录", nil)
+			return
+		}
+		f.recentCalls++
+		writeEnv(w, http.StatusOK, true, "", []map[string]any{})
 	})
 	mux.HandleFunc("PUT /api/games/{publicID}/wiki", func(w http.ResponseWriter, r *http.Request) {
 		if !hasSession(r) {
@@ -200,6 +211,27 @@ func TestGameAtlasSearchLinkUnlinkExistingWork(t *testing.T) {
 	doJSON(t, "DELETE", ts.URL+"/api/library/gameatlas/link?workId="+workID, nil, 200)
 	doJSON(t, "POST", ts.URL+"/api/library/gameatlas/push", map[string]any{"workId": workID}, 404)
 	doJSON(t, "DELETE", ts.URL+"/api/library/gameatlas/link?workId="+workID, nil, 404)
+}
+
+// 目录缓存：首次 /games/all 全拉；之后只走 /games/recent 增量。
+func TestGameAtlasCatalogFirstFullThenIncremental(t *testing.T) {
+	ga, fga := newFakeGA(t)
+	ts, _ := newTestServer(t)
+	doJSON(t, "PUT", ts.URL+"/api/settings", map[string]any{
+		"library": map[string]any{"gameatlasUrl": ga.URL, "gameatlasApiKey": "ga-pw"},
+	}, 200)
+	doJSON(t, "POST", ts.URL+"/api/works", map[string]any{"kind": "series", "title": "使命召唤"}, 201)
+
+	// 扫描拉取 GA 目录：首次 /games/all 全拉；之后只走 /games/recent 增量。
+	doJSON(t, "POST", ts.URL+"/api/library/scan", nil, 200)
+	if fga.allCalls != 1 || fga.recentCalls != 0 {
+		t.Fatalf("first pull: all=%d recent=%d, want 1/0", fga.allCalls, fga.recentCalls)
+	}
+	doJSON(t, "POST", ts.URL+"/api/library/scan", nil, 200)
+	doJSON(t, "GET", ts.URL+"/api/library/gameatlas/search?q=", nil, 200)
+	if fga.allCalls != 1 || fga.recentCalls < 2 {
+		t.Fatalf("incremental: all=%d recent=%d, want all=1 and recent>=2", fga.allCalls, fga.recentCalls)
+	}
 }
 
 func TestGameAtlasEndpointsRequireLogin(t *testing.T) {

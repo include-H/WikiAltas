@@ -13,12 +13,12 @@ import {
   Typography,
 } from '@douyinfe/semi-ui'
 import { IconMore } from '@douyinfe/semi-icons'
-import type { LibraryLink, Relation, Revision, Work } from '../../types'
-import { deleteWork, getWorkRelations, getWorkRevisions, pushGameAtlasWiki, restoreWorkRevision, unlinkGameAtlas } from '../../lib/api'
+import type { LibraryLink, LibrarySource, Relation, Revision, Work } from '../../types'
+import { deleteWork, getWorkRelations, getWorkRevisions, pushGameAtlasWiki, pushKomgaSummary, restoreWorkRevision, unlinkEmbyLink, unlinkGameAtlas, unlinkKomgaLink } from '../../lib/api'
 import { folderPath, workPath } from '../../lib/routes'
 import { absoluteTime } from '../../lib/tree'
 import { useAppStore } from '../../lib/store'
-import GameAtlasLinkModal from '../library/GameAtlasLinkModal'
+import LibraryLinkModal from '../library/LibraryLinkModal'
 
 const { Text } = Typography
 
@@ -32,6 +32,12 @@ const KIND_LABEL: Record<string, string> = {
   universe: '宇宙',
   series: '系列',
   work: '单作',
+}
+
+const LINK_SOURCE_LABEL: Record<string, string> = {
+  gameatlas: 'GameAtlas',
+  emby: 'Emby',
+  komga: 'Komga',
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -110,8 +116,9 @@ export default function DocActions({
   }
 
   const [pushing, setPushing] = useState(false)
-  const [linkOpen, setLinkOpen] = useState(false)
+  const [linkSource, setLinkSource] = useState<'gameatlas' | 'emby' | 'komga' | null>(null)
   const gaLink = (libraryLinks ?? []).find((l) => l.source === 'gameatlas')
+  const komgaLink = (libraryLinks ?? []).find((l) => l.source === 'komga')
 
   // 反哺：把已保存的正文（服务端自动带简介）写回 GameAtlas 条目
   const pushToGameAtlas = async () => {
@@ -138,6 +145,45 @@ export default function DocActions({
         try {
           await unlinkGameAtlas(workId)
           Toast.success('已解除 GameAtlas 关联')
+          await onReload()
+        } catch (e) {
+          Toast.error(e instanceof Error ? e.message : '解除失败')
+        }
+      },
+    })
+  }
+
+  // 反哺到 Komga：把简介 PATCH 到该节点所有 Komga 链的元数据（系列/单册）
+  const pushToKomga = async () => {
+    setPushing(true)
+    try {
+      const res = await pushKomgaSummary(workId)
+      const parts: string[] = []
+      if (res.count) parts.push(`${res.count} 个条目`)
+      if (res.summary) {
+        parts.push(`简介：${res.summary.length > 24 ? `${res.summary.slice(0, 24)}…` : res.summary}`)
+      }
+      Toast.success(`已反哺到 Komga${parts.length ? `（${parts.join('；')}）` : ''}`)
+    } catch (e) {
+      Toast.error(e instanceof Error ? e.message : '反哺失败')
+    } finally {
+      setPushing(false)
+    }
+  }
+
+  const removeLink = (source: LibrarySource, linkId: string) => {
+    Modal.confirm({
+      title: `解除这条 ${LINK_SOURCE_LABEL[source] ?? source} 关联？`,
+      content: '只解除外链，正文与版本历史不受影响。',
+      okText: '解除',
+      onOk: async () => {
+        try {
+          if (source === 'emby') {
+            await unlinkEmbyLink(linkId)
+          } else {
+            await unlinkKomgaLink(linkId)
+          }
+          Toast.success('已解除关联')
           await onReload()
         } catch (e) {
           Toast.error(e instanceof Error ? e.message : '解除失败')
@@ -180,8 +226,15 @@ export default function DocActions({
                 <Dropdown.Item onClick={removeGaLink}>解除 GameAtlas 关联</Dropdown.Item>
               </>
             ) : (
-              <Dropdown.Item onClick={() => setLinkOpen(true)}>关联到 GameAtlas…</Dropdown.Item>
+              <Dropdown.Item onClick={() => setLinkSource('gameatlas')}>关联到 GameAtlas…</Dropdown.Item>
             )}
+            <Dropdown.Item onClick={() => setLinkSource('emby')}>关联到 Emby…</Dropdown.Item>
+            {komgaLink && (
+              <Dropdown.Item disabled={pushing} onClick={() => void pushToKomga()}>
+                {pushing ? '反哺中…' : '反哺到 Komga'}
+              </Dropdown.Item>
+            )}
+            <Dropdown.Item onClick={() => setLinkSource('komga')}>关联到 Komga…</Dropdown.Item>
             <Dropdown.Item onClick={openHistory}>版本历史</Dropdown.Item>
             <Dropdown.Item
               disabled={revisions.length < 2}
@@ -250,14 +303,12 @@ export default function DocActions({
         )}
       </Modal>
 
-      <GameAtlasLinkModal
+      <LibraryLinkModal
         work={work}
-        visible={linkOpen}
-        onClose={() => setLinkOpen(false)}
-        onLinked={() => {
-          setLinkOpen(false)
-          void onReload()
-        }}
+        source={linkSource ?? 'gameatlas'}
+        visible={linkSource !== null}
+        onClose={() => setLinkSource(null)}
+        onLinksChanged={() => void onReload()}
       />
 
       <Modal
@@ -303,19 +354,29 @@ export default function DocActions({
               key: '库外链',
               value: (libraryLinks ?? []).length ? (
                 <span>
-                  {(libraryLinks ?? []).map((l, i) => (
-                    <span key={l.id}>
-                      {i > 0 && <br />}
+                  {(libraryLinks ?? []).map((l) => (
+                    <div key={l.id} className="link-row">
                       {l.url ? (
                         <a href={l.url} target="_blank" rel="noreferrer">
-                          {l.source} · {l.titleHint ?? l.externalId.slice(0, 8)}
+                          {LINK_SOURCE_LABEL[l.source] ?? l.source} · {l.titleHint ?? l.externalId.slice(0, 8)}
                         </a>
                       ) : (
                         <span>
-                          {l.source} · {l.titleHint ?? l.externalId.slice(0, 8)}
+                          {LINK_SOURCE_LABEL[l.source] ?? l.source} · {l.titleHint ?? l.externalId.slice(0, 8)}
                         </span>
                       )}
-                    </span>
+                      {(l.source === 'emby' || l.source === 'komga') && (
+                        <Button
+                          size="small"
+                          theme="borderless"
+                          type="danger"
+                          style={{ marginLeft: 6 }}
+                          onClick={() => removeLink(l.source, l.id)}
+                        >
+                          解除
+                        </Button>
+                      )}
+                    </div>
                   ))}
                 </span>
               ) : (

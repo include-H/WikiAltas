@@ -13,6 +13,7 @@ import (
 
 	"wikiatlas/backend/internal/domain"
 	"wikiatlas/backend/internal/httpapi"
+	"wikiatlas/backend/internal/llm"
 	"wikiatlas/backend/internal/run"
 	"wikiatlas/backend/internal/store"
 )
@@ -24,11 +25,18 @@ const testAdminPassword = "test-password-123"
 
 func newTestServer(t *testing.T) (*httptest.Server, *store.Store) {
 	t.Helper()
+	return newTestServerWithClient(t, nil)
+}
+
+// newTestServerWithClient 同 newTestServer，但注入自定义 LLM 客户端：
+// 节点扫库这类真的要跑一轮模型调用的流程用它（注入的客户端在 activeClient 里优先）。
+func newTestServerWithClient(t *testing.T, llmClient llm.Client) (*httptest.Server, *store.Store) {
+	t.Helper()
 	st, err := store.OpenMemory()
 	if err != nil {
 		t.Fatalf("OpenMemory: %v", err)
 	}
-	mgr := run.NewManager(st, nil)
+	mgr := run.NewManager(st, llmClient)
 	// do not Start() expiry loop in tests
 	srv := httpapi.New(st, mgr)
 	ts := httptest.NewServer(srv.Handler())

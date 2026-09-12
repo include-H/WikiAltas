@@ -97,6 +97,15 @@ func (s *Store) tableHasColumn(table, column string) (bool, error) {
 	return false, rows.Err()
 }
 
+// migrateMediumEnum 把瘦身前的中介质回填到现枚举（anime→tv、novel→book）。幂等。
+func (s *Store) migrateMediumEnum() error {
+	if _, err := s.DB.Exec(`UPDATE works SET medium = 'tv' WHERE medium = 'anime'`); err != nil {
+		return err
+	}
+	_, err := s.DB.Exec(`UPDATE works SET medium = 'book' WHERE medium = 'novel'`)
+	return err
+}
+
 // Migrate creates tables and FTS if missing.
 func (s *Store) Migrate() error {
 	schema := `
@@ -278,6 +287,10 @@ CREATE INDEX IF NOT EXISTS idx_sessions_target ON sessions(target, updated_at DE
 	// 出厂访问密码：保证"有库就能进管理态"，否则第一次没人能登录（DESIGN_V2 §3.6）
 	if err := s.ensureDefaultAdminPassword(); err != nil {
 		return fmt.Errorf("default admin password: %w", err)
+	}
+	// 2026-09-12: medium 枚举瘦身——anime 并入 tv、novel 并入 book。
+	if err := s.migrateMediumEnum(); err != nil {
+		return fmt.Errorf("migrate medium enum: %w", err)
 	}
 
 	// FTS5 virtual tables. trigram tokenizer supports CJK without external segmenters.

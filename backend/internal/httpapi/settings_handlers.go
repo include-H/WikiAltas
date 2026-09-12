@@ -38,6 +38,10 @@ type settingsPayload struct {
 		KomgaAPIKey     *string `json:"komgaApiKey"`
 		GameAtlasURL    *string `json:"gameatlasUrl"`
 		GameAtlasAPIKey *string `json:"gameatlasApiKey"`
+		// EmbyLibraryRoles：nil = 这次没提交（不动）；非 nil = 整体替换。
+		EmbyLibraryRoles *[]domain.EmbyLibraryRole `json:"embyLibraryRoles"`
+		// ScanIntervalMinutes：nil = 没提交；0 = 关闭；其余为分钟数。
+		ScanIntervalMinutes *int `json:"scanIntervalMinutes"`
 	} `json:"library"`
 	Runs struct {
 		ExpireDays        int `json:"expireDays"`
@@ -112,6 +116,30 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if v := nonEmpty(p.Library.GameAtlasAPIKey); v != nil {
 		st.Library.GameAtlasAPIKey = v
+	}
+	if p.Library.EmbyLibraryRoles != nil {
+		roles := make([]domain.EmbyLibraryRole, 0, len(*p.Library.EmbyLibraryRoles))
+		for _, r := range *p.Library.EmbyLibraryRoles {
+			name := strings.TrimSpace(r.Name)
+			if name == "" {
+				continue
+			}
+			if r.Role != domain.EmbyLibraryRoleWork && r.Role != domain.EmbyLibraryRoleMixed {
+				continue
+			}
+			roles = append(roles, domain.EmbyLibraryRole{ID: r.ID, Name: name, Role: r.Role})
+		}
+		st.Library.EmbyLibraryRoles = roles
+	}
+	if p.Library.ScanIntervalMinutes != nil {
+		v := *p.Library.ScanIntervalMinutes
+		if v < 0 {
+			v = 0
+		}
+		if v > 10080 {
+			v = 10080
+		}
+		st.Library.ScanIntervalMinutes = &v
 	}
 	if p.Runs.ExpireDays > 0 {
 		st.Runs.ExpireDays = p.Runs.ExpireDays

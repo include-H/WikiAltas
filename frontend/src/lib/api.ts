@@ -4,11 +4,15 @@ import type {
   CreateRunBody,
   CreateWorkBody,
   Doc,
-  GameAtlasSearchEntry,
-  GameAtlasSuggestion,
+  EmbyLibraryView,
   LibraryLink,
+  LibraryPoolResponse,
+  LibrarySearchEntry,
+  LibrarySuggestion,
   LibrarySourceInfo,
   Me,
+  NodeSweepResponse,
+  NodeSweepRunResponse,
   PatchWorkBody,
   PutContentBody,
   PutContentResult,
@@ -257,24 +261,48 @@ export function syncLibrary(source?: string): Promise<{ runId: string }> {
   })
 }
 
-// --- Library · GameAtlas（孪生：载体对位 = 游戏）---
+// --- Library · 媒体库（GameAtlas / Emby 通用）---
 
-/** 集合页建档建议：GameAtlas 里属本系列、还没挂链的条目。 */
-export function suggestGameAtlas(
+export type LibraryApiSource = 'gameatlas' | 'emby' | 'komga'
+
+/** 集合页建档建议：库里属本系列、还没挂链的条目。 */
+export function suggestLibrary(
+  source: LibraryApiSource,
   workId: string,
-): Promise<{ suggestions: GameAtlasSuggestion[]; gameatlasUrl: string }> {
-  return request(`/api/library/gameatlas/suggest?workId=${encodeURIComponent(workId)}`)
+): Promise<{ suggestions: LibrarySuggestion[] }> {
+  return request(`/api/library/${source}/suggest?workId=${encodeURIComponent(workId)}`)
 }
 
-/** 一键建档：建 stub 子节点并挂上 GameAtlas 外链。 */
-export function archiveGameAtlasEntry(
+/** 一键建档：建 stub 子节点并挂上该库的外链。 */
+export function archiveLibrary(
+  source: LibraryApiSource,
   workId: string,
   publicId: string,
 ): Promise<{ work: Work; link: LibraryLink }> {
-  return request('/api/library/gameatlas/archive', {
+  return request(`/api/library/${source}/archive`, {
     method: 'POST',
     body: JSON.stringify({ workId, publicId }),
   })
+}
+
+/** 关联既有条目（Emby 允许多条、GameAtlas 一条）。 */
+export function linkLibrary(
+  source: LibraryApiSource,
+  workId: string,
+  publicId: string,
+): Promise<{ link: LibraryLink }> {
+  return request(`/api/library/${source}/link`, {
+    method: 'POST',
+    body: JSON.stringify({ workId, publicId }),
+  })
+}
+
+/** 全库搜索（关联弹窗用）。 */
+export function searchLibrary(
+  source: LibraryApiSource,
+  q: string,
+): Promise<{ entries: LibrarySearchEntry[] }> {
+  return request(`/api/library/${source}/search?q=${encodeURIComponent(q)}`)
 }
 
 /** 反哺：把节点正文（可选带简介）写回 GameAtlas 条目。 */
@@ -288,26 +316,121 @@ export function pushGameAtlasWiki(
   })
 }
 
-/** 关联已有条目：按标题/别名/系列名子串搜 GameAtlas（空白 = 全量）。 */
-export function searchGameAtlas(
-  q: string,
-): Promise<{ entries: GameAtlasSearchEntry[]; gameatlasUrl: string }> {
-  return request(`/api/library/gameatlas/search?q=${encodeURIComponent(q)}`)
-}
-
-/** 把已有节点关联到一条 GameAtlas 条目。 */
-export function linkGameAtlas(workId: string, publicId: string): Promise<{ link: LibraryLink }> {
-  return request('/api/library/gameatlas/link', {
-    method: 'POST',
-    body: JSON.stringify({ workId, publicId }),
-  })
-}
-
-/** 解除节点的 GameAtlas 关联（只动外链，正文不受影响）。 */
+/** 解除 GameAtlas 关联（一条，按 workId）。 */
 export function unlinkGameAtlas(workId: string): Promise<{ ok: boolean }> {
   return request(`/api/library/gameatlas/link?workId=${encodeURIComponent(workId)}`, {
     method: 'DELETE',
   })
+}
+
+/** 解除 Emby 关联（多条，按链接 id）。 */
+export function unlinkEmbyLink(linkId: string): Promise<{ ok: boolean }> {
+  return request(`/api/library/emby/link?id=${encodeURIComponent(linkId)}`, {
+    method: 'DELETE',
+  })
+}
+
+/** 解除 Komga 关联（多条，按链接 id）。 */
+export function unlinkKomgaLink(linkId: string): Promise<{ ok: boolean }> {
+  return request(`/api/library/komga/link?id=${encodeURIComponent(linkId)}`, {
+    method: 'DELETE',
+  })
+}
+
+/** 反哺到 Komga：把简介 PATCH 到节点所有 Komga 链（系列/单册）的元数据。 */
+export function pushKomgaSummary(
+  workId: string,
+  summary?: string,
+): Promise<{ ok: boolean; count?: number; summary?: string }> {
+  return request('/api/library/komga/push', {
+    method: 'POST',
+    body: JSON.stringify(summary != null ? { workId, summary } : { workId }),
+  })
+}
+
+/** 节点页的 Emby 相关影像/OST 候选（混杂库）。 */
+export function relatedEmby(workId: string): Promise<{ related: LibrarySearchEntry[] }> {
+  return request(`/api/library/emby/related?workId=${encodeURIComponent(workId)}`)
+}
+
+/** 设置页：拉 Emby 媒体库清单（给每个库挑角色用）。 */
+export function getEmbyViews(): Promise<{ views: EmbyLibraryView[] }> {
+  return request('/api/library/emby/views')
+}
+
+/** 建议池：读后台扫描清单（秒开，不实时轰库）。 */
+export function getLibraryPool(): Promise<LibraryPoolResponse> {
+  return request('/api/library/pool')
+}
+
+/** 扫描媒体库（后台低频扫描的手动触发）：把三源清单落成快照。 */
+export function scanLibrary(): Promise<{
+  ok: boolean
+  scannedAt: string
+  entries: number
+  linked: number
+  unlinked: number
+}> {
+  return request('/api/library/scan', { method: 'POST' })
+}
+
+/** 忽略：单条（entryId）或整组（containerKey），持久化在清单里。 */
+export function ignoreLibrary(body: {
+  source: string
+  entryId?: string
+  containerKey?: string
+  containerTitle?: string
+}): Promise<{ ok: boolean }> {
+  return request('/api/library/ignore', { method: 'POST', body: JSON.stringify(body) })
+}
+
+/** 恢复忽略。 */
+export function unignoreLibrary(q: {
+  source: string
+  entryId?: string
+  containerKey?: string
+}): Promise<{ ok: boolean }> {
+  const params = new URLSearchParams({ source: q.source })
+  if (q.entryId) params.set('entryId', q.entryId)
+  if (q.containerKey) params.set('containerKey', q.containerKey)
+  return request(`/api/library/ignore?${params.toString()}`, { method: 'DELETE' })
+}
+
+/** AI 对一遍：让当前模型产出建议清单（只建议，绝不自动执行）。 */
+export function aiSuggestLibrary(): Promise<{
+  ok: boolean
+  model: string
+  entries: number
+  matched: number
+  archives: number
+  links: number
+  ignored: number
+}> {
+  return request('/api/library/ai-suggest', { method: 'POST' })
+}
+
+/** 节点扫库：读这个节点现存的挂链建议（写完之后自动扫出来的那份）。 */
+export function getNodeSweep(workId: string): Promise<NodeSweepResponse> {
+  return request(`/api/library/node-sweep?workId=${encodeURIComponent(workId)}`)
+}
+
+/** 节点扫库：立即扫一遍（题名变体 → 三源候选 → 判官），产出待确认的建议。 */
+export function runNodeSweep(workId: string): Promise<NodeSweepRunResponse> {
+  return request('/api/library/node-sweep', { method: 'POST', body: JSON.stringify({ workId }) })
+}
+
+/** 逐条忽略一条建议（per-node：只是不再向这个节点提起，不等于全局忽略）。 */
+export function dismissNodeSweep(workId: string, key: string): Promise<{ ok: boolean }> {
+  return request('/api/library/node-sweep/dismiss', {
+    method: 'POST',
+    body: JSON.stringify({ workId, key }),
+  })
+}
+
+/** 恢复被忽略的一条建议。 */
+export function restoreNodeSweep(workId: string, key: string): Promise<{ ok: boolean }> {
+  const params = new URLSearchParams({ workId, key })
+  return request(`/api/library/node-sweep/dismiss?${params.toString()}`, { method: 'DELETE' })
 }
 
 // --- Search ---

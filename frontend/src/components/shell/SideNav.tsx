@@ -4,6 +4,7 @@ import { Button, Tooltip } from '@douyinfe/semi-ui'
 import {
   IconAppCenter,
   IconHome,
+  IconList,
   IconPlus,
   IconSearch,
   IconSetting,
@@ -141,6 +142,15 @@ export default function SideNav() {
           onClick={() => nav('/')}
         >
           置顶
+        </Button>
+        <Button
+          className={`side-link${loc.pathname === '/library' ? ' active' : ''}`}
+          theme="borderless"
+          type="tertiary"
+          icon={<IconList />}
+          onClick={() => nav('/library')}
+        >
+          媒体库建议
         </Button>
       </nav>
 

@@ -162,6 +162,15 @@ func (c *Client) ListAll(ctx context.Context) ([]GameAtlasEntry, error) {
 	return out, nil
 }
 
+// ListRecent 拉最近入库（days 天窗口），供目录的增量同步。
+func (c *Client) ListRecent(ctx context.Context, days int) ([]GameAtlasEntry, error) {
+	var out []GameAtlasEntry
+	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/api/games/recent?days=%d", days), nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PushWiki 把正文写回 GameAtlas 条目；summary 非 nil 时连同简介一起反哺。
 func (c *Client) PushWiki(ctx context.Context, publicID, content string, summary *string) error {
 	body := map[string]any{

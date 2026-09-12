@@ -83,7 +83,7 @@ func (s *Server) handleGameAtlasSuggest(w http.ResponseWriter, r *http.Request) 
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	entries, err := client.ListAll(ctx)
+	entries, err := s.gaCatalogEntries(ctx, client)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "gameatlas", err.Error())
 		return
@@ -110,14 +110,11 @@ func (s *Server) handleGameAtlasSuggest(w http.ResponseWriter, r *http.Request) 
 			Title:       e.Title,
 			TitleAlt:    e.TitleAlt,
 			ReleaseDate: e.ReleaseDate,
-			CoverImage:  e.CoverImage,
+			CoverImage:  absCover(client.BaseURL(), e.CoverImage),
 			URL:         client.GameURL(e.PublicID),
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"suggestions":  suggestions,
-		"gameatlasUrl": client.BaseURL(),
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"suggestions": suggestions})
 }
 
 // handleGameAtlasArchive 是 POST /api/library/gameatlas/archive {workId, publicId}：
@@ -317,7 +314,7 @@ func (s *Server) handleGameAtlasSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	entries, err := client.ListAll(ctx)
+	entries, err := s.gaCatalogEntries(ctx, client)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "gameatlas", err.Error())
 		return
@@ -341,7 +338,7 @@ func (s *Server) handleGameAtlasSearch(w http.ResponseWriter, r *http.Request) {
 			Title:       e.Title,
 			TitleAlt:    e.TitleAlt,
 			ReleaseDate: e.ReleaseDate,
-			CoverImage:  e.CoverImage,
+			CoverImage:  absCover(client.BaseURL(), e.CoverImage),
 			URL:         client.GameURL(e.PublicID),
 		}
 		if e.Series != nil {
@@ -361,10 +358,7 @@ func (s *Server) handleGameAtlasSearch(w http.ResponseWriter, r *http.Request) {
 	if len(out) > 50 {
 		out = out[:50]
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"entries":      out,
-		"gameatlasUrl": client.BaseURL(),
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"entries": out})
 }
 
 func gaSearchRank(item gaSearchEntry, norm string) int {
@@ -477,6 +471,18 @@ func (s *Server) handleGameAtlasUnlink(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeErr(w, http.StatusNotFound, "no_link", "这个节点没有 GameAtlas 关联")
+}
+
+// absCover 把条目的相对封面路径拼成绝对 URL（前端不再需要库地址前缀）。
+func absCover(baseURL string, cover *string) *string {
+	if cover == nil || *cover == "" {
+		return nil
+	}
+	if strings.HasPrefix(*cover, "http://") || strings.HasPrefix(*cover, "https://") {
+		return cover
+	}
+	u := baseURL + *cover
+	return &u
 }
 
 // extractWikiatlasSummary 从正文里挑一段当简介：第一个"普通段落"

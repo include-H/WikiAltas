@@ -4,7 +4,7 @@
 export type UUID = string
 
 export type WorkKind = 'universe' | 'series' | 'work'
-export type Medium = 'game' | 'movie' | 'tv' | 'anime' | 'manga' | 'novel' | 'book' | 'other'
+export type Medium = 'game' | 'movie' | 'tv' | 'manga' | 'book' | 'other'
 export type WorkStatus = 'stub' | 'draft' | 'ready'
 export type Visibility = 'public' | 'private'
 export type Author = 'human' | 'llm' | 'import'
@@ -97,30 +97,164 @@ export interface LibraryLink {
   externalId: string
   url: string | null
   titleHint: string | null
+  /** 展示用：读取时从扫描清单补齐的封面小图（没扫到就没有）。 */
+  coverImage?: string
   createdAt: string
 }
 
-/** GameAtlas 建档建议：属于本系列、还没在 WikiAltas 挂链的条目。 */
-export interface GameAtlasSuggestion {
+/** 建档建议（媒体库通用）：属于集合、还没挂链的条目。 */
+export interface LibrarySuggestion {
   publicId: string
   title: string
   titleAlt: string | null
   releaseDate: string | null
   coverImage: string | null
   url: string
+  /** 建档介质提示：tv | movie | book…（GameAtlas 不带） */
+  kind?: string
+  /** Komga：comic = 漫画、novel = 小说（展示用） */
+  format?: string
 }
 
-/** GameAtlas 搜索结果（关联已有条目用）：带挂链状态。 */
-export interface GameAtlasSearchEntry {
+/** 库搜索结果 / 关联候选：带挂链状态。 */
+export interface LibrarySearchEntry {
   publicId: string
   title: string
   titleAlt: string | null
   releaseDate: string | null
   coverImage: string | null
-  series: { id: number; name: string } | null
+  series?: { id: number; name: string } | null
   url: string
   linked: boolean
   linkedWorkId?: string
+  /** Emby：movie | series | album | collection；Komga：book */
+  kind?: string
+  /** Komga：comic | novel */
+  format?: string
+}
+
+/** Emby 媒体库（设置页选角色用）。 */
+export interface EmbyLibraryView {
+  id: string
+  name: string
+  collectionType: string
+}
+
+/** 设置里存的 Emby 库角色：work = 正片（建档建议）；mixed = 混杂内容（关联候选）。 */
+export interface EmbyLibraryRoleSetting {
+  id?: string
+  name: string
+  role: 'work' | 'mixed'
+}
+
+/** 建议池条目：后台扫描清单的一条（挂链状态是实时的）。 */
+export interface PoolEntry {
+  source: LibrarySource
+  publicId: string
+  title: string
+  titleAlt?: string | null
+  releaseDate?: string | null
+  coverImage?: string
+  url: string
+  kind: string
+  format?: string
+  extra?: string
+  linkedWorkId?: string
+  linkedWorkTitle?: string
+  firstSeenAt?: string
+  isNew?: boolean
+}
+
+/** 建议池分组：按源 → 容器（库/系列/合集）。 */
+export interface PoolGroup {
+  source: LibrarySource
+  containerKey: string
+  containerTitle: string
+  containerKind?: string
+  unlinked: PoolEntry[]
+  linkedCount: number
+  ignoredCount: number
+  newCount: number
+}
+
+/** AI 建议：只建议，点确认才执行。 */
+export interface PoolAiSuggestion {
+  entry: PoolEntry
+  action: 'link' | 'archive' | 'ignore'
+  targetNodeId?: string
+  targetTitle?: string
+  confidence: number
+  reason: string
+}
+
+export interface PoolIgnoredGroup {
+  source: LibrarySource
+  containerKey: string
+  containerTitle: string
+}
+
+export interface LibraryPoolResponse {
+  scannedAt: string
+  previousScannedAt?: string
+  scanIntervalMinutes: number
+  sourcesConfigured: { gameatlas?: boolean; emby?: boolean; komga?: boolean }
+  rolesConfigured: boolean
+  groups: PoolGroup[]
+  ignoredEntries: PoolEntry[]
+  ignoredGroups: PoolIgnoredGroup[]
+  aiSuggestions: PoolAiSuggestion[]
+  aiGeneratedAt?: string
+  aiModel?: string
+}
+
+/** 节点扫库：一部作品的「媒体库发现」（写完之后自动扫，也可手动重扫）。 */
+export interface NodeSweepSuggestion {
+  key: string
+  source: LibrarySource
+  entryId: string
+  title: string
+  kind?: string
+  format?: string
+  extra?: string
+  coverImage?: string
+  url: string
+  confidence: number
+  reason: string
+}
+
+export interface NodeSweepSourceStatus {
+  source: LibrarySource
+  status: 'ok' | 'unconfigured' | 'error'
+  message?: string
+  candidates: number
+}
+
+export interface NodeSweepDismissed {
+  workId: string
+  key: string
+  source: LibrarySource
+  title: string
+}
+
+export interface NodeSweepResponse {
+  workId: string
+  generatedAt?: string
+  model?: string
+  suggestions: NodeSweepSuggestion[]
+  dismissed: NodeSweepDismissed[]
+  sources?: NodeSweepSourceStatus[]
+  total?: number
+}
+
+/** 手动扫一遍的响应：不含 dismissed（忽略记录在 GET 里读）。 */
+export interface NodeSweepRunResponse {
+  ok: boolean
+  workId: string
+  model?: string
+  generatedAt?: string
+  sources?: NodeSweepSourceStatus[]
+  suggestions: NodeSweepSuggestion[]
+  total?: number
 }
 
 export interface Run {
@@ -266,7 +400,7 @@ export interface CreateRunBody {
   goal: string
   /** 会话键：work:<id> / doc:<id> / home / batch:<id> */
   workspace?: string
-  /** 思考等级（聊天框里选的档位）：off | low | medium | high | xhigh | max；留空用设置页的值 */
+  /** 思考等级（聊天框里选的档位）：none | low | medium | high | xhigh | max；留空用设置页的值 */
   reasoningEffort?: string
   context?: {
     workId?: UUID
@@ -301,6 +435,10 @@ export interface Settings {
     komgaApiKeyConfigured?: boolean
     gameatlasUrl?: string
     gameatlasApiKeyConfigured?: boolean
+    /** Emby 媒体库角色（正片 / 混杂内容） */
+    embyLibraryRoles?: EmbyLibraryRoleSetting[]
+    /** 媒体库后台扫描间隔（分钟；0 = 关闭；未设为默认 360） */
+    scanIntervalMinutes?: number
   }
   runs: {
     expireDays: number
@@ -347,6 +485,10 @@ export interface SettingsPayload {
     komgaApiKey?: string
     gameatlasUrl?: string
     gameatlasApiKey?: string
+    /** nil = 不提交（不动）；非 nil = 整体替换（设置页按当前库清单生成） */
+    embyLibraryRoles?: EmbyLibraryRoleSetting[]
+    /** 媒体库后台扫描间隔（分钟；0 = 关闭） */
+    scanIntervalMinutes?: number
   }
   runs: {
     expireDays: number

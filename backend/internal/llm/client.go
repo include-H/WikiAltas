@@ -94,7 +94,8 @@ type Config struct {
 	Model       string
 	Temperature *float64
 	MaxTokens   *int
-	// ReasoningEffort 是思考等级（off/低/中/高/超高/max）。Responses 规范里它在
+	// ReasoningEffort 是思考等级（none | low | medium | high | xhigh | max；none=关闭）。
+	// Responses 规范里它在
 	// `reasoning.effort` 上；空 = 不发这个参数（由网关用默认值）。
 	ReasoningEffort string
 	// Protocol 是协议标识。留空 = 默认（responses）。这是"留后手"的位置：
@@ -152,6 +153,11 @@ func firstEnv(keys ...string) string {
 // 认不出的协议返回**明确错误**，不静默退回默认协议：静默退回会让人以为
 // "设置生效了"，实际跑的是另一条路——那比直接报错难查得多。
 func NewClient(cfg Config) (Client, error) {
+	// 旧词表迁移：宿主曾用 "off" 表示关闭，线上协议只认 "none"。在这一个入口归一，
+	// 存过旧值的设置 / 工单上下文照常工作——统一词表：none | low | medium | high | xhigh | max。
+	if strings.EqualFold(strings.TrimSpace(cfg.ReasoningEffort), "off") {
+		cfg.ReasoningEffort = "none"
+	}
 	p := strings.ToLower(strings.TrimSpace(cfg.Protocol))
 	if p == "" {
 		p = ProtocolResponses

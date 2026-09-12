@@ -17,6 +17,33 @@ func newTestStore(t *testing.T) *Store {
 	return s
 }
 
+// medium 枚举瘦身迁移：老库里的 anime→tv、novel→book，幂等。
+func TestMigrateMediumEnumRemapsLegacyValues(t *testing.T) {
+	s := newTestStore(t)
+	for _, row := range []struct{ id, medium string }{{"m1", "anime"}, {"m2", "novel"}, {"m3", "tv"}} {
+		if _, err := s.DB.Exec(
+			`INSERT INTO works (id, kind, medium, title, created_at, updated_at)
+			 VALUES (?, 'work', ?, ?, '2026-09-12T00:00:00Z', '2026-09-12T00:00:00Z')`,
+			row.id, row.medium, row.id,
+		); err != nil {
+			t.Fatalf("insert %s: %v", row.id, err)
+		}
+	}
+	if err := s.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	want := map[string]string{"m1": "tv", "m2": "book", "m3": "tv"}
+	for id, w := range want {
+		var got string
+		if err := s.DB.QueryRow(`SELECT medium FROM works WHERE id = ?`, id).Scan(&got); err != nil {
+			t.Fatalf("select %s: %v", id, err)
+		}
+		if got != w {
+			t.Fatalf("medium of %s = %s, want %s", id, got, w)
+		}
+	}
+}
+
 func TestCreateWorkAndTree(t *testing.T) {
 	s := newTestStore(t)
 

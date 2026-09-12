@@ -14,14 +14,12 @@ const KIND_OPTIONS: { value: string; label: string }[] = [
   { value: 'work', label: '单作 work' },
 ]
 
-// 介质决定 skill 里的 media-*.md（小说/电影/剧集都用得上）
+// 介质决定 skill 里的 media-*.md（电影/剧集 → video，漫画/书籍 → book）
 const MEDIUM_OPTIONS: { value: string; label: string }[] = [
   { value: 'game', label: '游戏 game' },
   { value: 'movie', label: '电影 movie' },
   { value: 'tv', label: '剧集 tv' },
-  { value: 'anime', label: '动画 anime' },
   { value: 'manga', label: '漫画 manga' },
-  { value: 'novel', label: '小说 novel' },
   { value: 'book', label: '书籍 book' },
   { value: 'other', label: '其他 other' },
 ]
