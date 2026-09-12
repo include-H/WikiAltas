@@ -68,3 +68,21 @@ WIKIATLAS_ADDR=0.0.0.0:8080   # 监听地址，供 Docker/一次性启动用（�
 ## 验收
 
 见 DESIGN_V2.md §12。
+
+## 部署（Docker，单容器）
+
+镜像把前端产物嵌进后端二进制，一个容器一个端口（8080），数据卷挂 `/app/data`（SQLite 库、
+媒体库清单、会话与工单都在里面）：
+
+```bash
+docker run -d --name wikialtas -p 8080:8080 \
+  -v /mnt/Docker/WikiAltas/data:/app/data \
+  hao0114/wikialtas:latest
+# 或 docker compose up -d（见 docker-compose.yml，DATA_DIR 可改数据目录）
+```
+
+- 首次打开用出厂访问密码 `1234` 进管理态，到设置页改掉。
+- 写作 skill（9 章骨架/题记/事实边界）随镜像发布在 `/app/skills/wiki-writing`，
+  启动参数已指好；要自定义就挂载覆盖或改设置页的参数。
+- 打 tag（`v*`）即自动发布：GitHub Release（linux-amd64 二进制 + skills 的 tar/zip）
+  + Docker Hub `hao0114/wikialtas`（精确版本 / major.minor / latest）。

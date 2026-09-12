@@ -151,6 +151,11 @@ func (s *Server) guestAllowed(r *http.Request) bool {
 		return false
 	}
 	p := r.URL.Path
+	// 前端静态产物（非 /api 的 GET）：应用壳人人都要能打开——登录页就在里面。
+	// 内容权限不在这里管：能看什么由 /api 各接口自己判。
+	if !strings.HasPrefix(p, "/api/") {
+		return true
+	}
 	switch {
 	case p == "/api/health", p == "/api/auth/me", p == "/api/tree", p == "/api/search":
 		return true

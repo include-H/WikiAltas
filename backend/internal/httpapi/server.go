@@ -154,6 +154,9 @@ func (s *Server) routes() {
 	m.HandleFunc("PUT /api/settings", s.handlePutSettings)
 	m.HandleFunc("POST /api/settings/test-llm", s.handleTestLLM)
 	m.HandleFunc("GET /api/runtime", s.handleRuntime)
+
+	// 前端静态产物（构建时嵌入，单容器部署用）——最具体的 /api 路由都排在上面，这里收剩下的。
+	m.HandleFunc("GET /", s.handleWebUI)
 }
 
 // --- helpers ---

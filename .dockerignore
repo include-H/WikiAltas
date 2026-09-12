@@ -1,0 +1,12 @@
+.git
+.github
+.shots
+.secrets
+deepseek-harness
+codex
+*.png
+backend/data
+frontend/node_modules
+frontend/dist
+backend/web/dist
+__pycache__

@@ -18,6 +18,10 @@ frontend/node_modules/.vite/
 *.tsbuildinfo
 __pycache__/
 
+# 后端嵌入用的前端产物（构建时从 frontend/dist 拷入，不入库）
+backend/web/dist/*
+!backend/web/dist/.gitkeep
+
 # 本地参考：用户 checkout 的 deepseek-harness（295MB，只是拿来对照 harness 设计）
 /deepseek-harness/
 # 本地参考：OpenAI Codex 官方仓库（717MB，对照 CLI/TUI 的流式与任务展示）
