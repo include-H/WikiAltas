@@ -11,8 +11,11 @@ import { buildTreeData, subTreeIds } from '../../lib/tree'
 const { Text } = Typography
 
 /**
- * 左栏的资料夹模式：点系列节点的「资料夹」后，左栏从宇宙树切成该系列的资料列表
- * （对齐 DESIGN_V2 §5.3：左栏切到该节点资料列表，正文区仍打开文档）。
+ * 左栏的资料夹模式。两种形态：
+ *  · 宇宙 / 系列（树里有「资料夹」那一行）：自己名下的资料，可新建、可关联子树内的条目；
+ *  · 单作（入口在节点菜单的「访问资料夹」，树里不占一行）：只读视图，列出祖先资料夹里
+ *    关联到这篇的资料——单作不存资料，它是"谁写了我"的那一面。
+ * 正文区始终仍打开选中的文档（对齐 DESIGN_V2 §5.3）。
  */
 export default function FolderPane({ workId }: { workId: string }) {
   const nav = useNavigate()
@@ -45,7 +48,7 @@ export default function FolderPane({ workId }: { workId: string }) {
     void load()
   }, [load, contentStamp])
 
-  // 资料夹 = 系列：只能关联本系列子树内的单作
+  // 资料夹是节点自己的抽屉：只能关联本节点子树内的条目
   const linkTreeData = useMemo(() => {
     const inside = subTreeIds(nodes, workId)
     return buildTreeData(nodes.filter((n) => inside.has(n.id)))
@@ -82,6 +85,8 @@ export default function FolderPane({ workId }: { workId: string }) {
 
   const activeDocId = params.docId
   const title = work?.title ?? '资料夹'
+  /** 单作资料夹是只读视图：资料存在祖先容器里，这里只负责把关联到它的挑出来。 */
+  const readOnly = work?.kind === 'work'
 
   return (
     <div className="folder-pane">
@@ -91,19 +96,21 @@ export default function FolderPane({ workId }: { workId: string }) {
           type="tertiary"
           size="small"
           icon={<IconChevronLeft />}
-          onClick={() => nav(workPath(workId, work?.slug))}
+          onClick={() => nav(workPath(workId))}
         >
           返回宇宙树
         </Button>
-        <Button
-          theme="borderless"
-          type="tertiary"
-          size="small"
-          icon={<IconPlus />}
-          onClick={() => setCreating(true)}
-        >
-          新建资料
-        </Button>
+        {!readOnly && (
+          <Button
+            theme="borderless"
+            type="tertiary"
+            size="small"
+            icon={<IconPlus />}
+            onClick={() => setCreating(true)}
+          >
+            新建资料
+          </Button>
+        )}
       </div>
       <div className="folder-pane-title" title={title}>
         {title} · 资料夹
@@ -119,16 +126,20 @@ export default function FolderPane({ workId }: { workId: string }) {
               <span className="folder-pane-empty-text">
                 还没有资料
                 <br />
-                资料是挂在系列下的长文（设定集、访谈、攻略…）
+                {readOnly
+                  ? '所属系列的资料夹里还没有关联到这篇的资料'
+                  : '资料是挂在这个宇宙 / 系列下的长文（设定集、访谈、攻略…）'}
               </span>
             }
             style={{ padding: 16 }}
           >
-            <div className="folder-pane-empty-cta">
-              <Button size="small" theme="light" icon={<IconPlus />} onClick={() => setCreating(true)}>
-                新建资料
-              </Button>
-            </div>
+            {!readOnly && (
+              <div className="folder-pane-empty-cta">
+                <Button size="small" theme="light" icon={<IconPlus />} onClick={() => setCreating(true)}>
+                  新建资料
+                </Button>
+              </div>
+            )}
           </Empty>
         ) : (
           docs.map((d) => (
@@ -149,18 +160,20 @@ export default function FolderPane({ workId }: { workId: string }) {
                   {d.links.length > 0 ? `关联 ${d.links.length} 条` : `v${d.contentVer}`}
                 </span>
               </div>
-              <Button
-                theme="borderless"
-                type="tertiary"
-                size="small"
-                icon={<IconLink />}
-                aria-label="关联条目"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setLinking(d)
-                  setLinkIds(d.links ?? [])
-                }}
-              />
+              {!readOnly && (
+                <Button
+                  theme="borderless"
+                  type="tertiary"
+                  size="small"
+                  icon={<IconLink />}
+                  aria-label="关联条目"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setLinking(d)
+                    setLinkIds(d.links ?? [])
+                  }}
+                />
+              )}
             </div>
           ))
         )}
@@ -168,7 +181,8 @@ export default function FolderPane({ workId }: { workId: string }) {
 
       <div className="folder-pane-foot">
         <Text type="tertiary" size="small">
-          {docs.length} 份资料 · 只能关联本系列单作
+          {docs.length} 份资料 ·{' '}
+          {readOnly ? '关联到这篇的资料' : '只能关联本节点子树内的条目'}
         </Text>
       </div>
 
@@ -199,7 +213,7 @@ export default function FolderPane({ workId }: { workId: string }) {
         width={460}
       >
         <div className="dialog-hint" style={{ marginBottom: 12 }}>
-          资料夹就是一个系列：这里的资料只能关联本系列下的单作，不能跨系列。
+          资料夹是当前宇宙 / 系列自己的抽屉：这里的资料只能关联本节点子树内的条目，不能跨出去。
         </div>
         <TreeSelect
           multiple
@@ -209,7 +223,7 @@ export default function FolderPane({ workId }: { workId: string }) {
           defaultExpandAll
           dropdownMatchSelectWidth
           style={{ width: '100%' }}
-          placeholder="选择本系列下的单作"
+          placeholder="选择本节点子树内的条目"
         />
       </Modal>
     </div>

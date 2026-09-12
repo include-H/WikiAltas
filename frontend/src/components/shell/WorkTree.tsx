@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { Button, Dropdown, Empty, Modal, Spin, Toast, Tree } from '@douyinfe/semi-ui'
 import { IconFile, IconFolder, IconLock, IconMore, IconStar } from '@douyinfe/semi-icons'
@@ -7,6 +7,7 @@ import type { WorkSummary } from '../../types'
 import { deleteWork, patchWork } from '../../lib/api'
 import { useAppStore } from '../../lib/store'
 import { folderPath, workPath, UNKNOWN_WORK_ID } from '../../lib/routes'
+import { MAX_PINS } from '../../lib/pins'
 import { attachFolderRows, folderKey, folderKeyWorkId, isFolderKey } from '../../lib/tree'
 import type { TreeNodeData } from '../../lib/tree'
 import { CreateNodeModal, MoveNodeModal } from './WorkDialogs'
@@ -28,6 +29,8 @@ export default function WorkTree() {
   const loc = useLocation()
   const [createTarget, setCreateTarget] = useState<CreateTarget | null>(null)
   const [moveNode, setMoveNode] = useState<WorkSummary | null>(null)
+  // 目录树默认折叠：只露根节点，点谁展开谁（以前是 expandAll，整棵树全摊开）。
+  const [expandedKeys, setExpandedKeys] = useState<string[]>([])
 
   const routeId = params.id
   const selectedId = routeId && routeId !== UNKNOWN_WORK_ID ? routeId : null
@@ -35,14 +38,31 @@ export default function WorkTree() {
   const treeData = useMemo(() => attachFolderRows(nodes), [nodes])
   const byId = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes])
 
+  // 当前选中的节点要看得见：把它一路上级展开（其余分支保持折叠）。
+  // 刷新后直达深层页面、或从别处导航过来时，树都会跟到你的位置。
+  useEffect(() => {
+    if (!selectedId) return
+    const chain: string[] = []
+    let cur = byId.get(selectedId)
+    while (cur?.parentId) {
+      chain.push(cur.parentId)
+      cur = byId.get(cur.parentId)
+    }
+    if (chain.length) {
+      setExpandedKeys((prev) => Array.from(new Set([...prev, ...chain])))
+    }
+  }, [selectedId, byId])
+
   const onSelect = (selectedKey: string) => {
     const key = String(selectedKey ?? '')
     if (isFolderKey(key)) {
       nav(folderPath(folderKeyWorkId(key)))
       return
     }
+    // 点击的同时展开它（点击的主语义 = 去这一层 + 看到下一层）
+    setExpandedKeys((prev) => (prev.includes(key) ? prev : [...prev, key]))
     const node = byId.get(key)
-    if (node) nav(workPath(node.id, node.slug))
+    if (node) nav(workPath(node.id))
   }
 
   const removeNode = (w: WorkSummary) => {
@@ -116,18 +136,37 @@ export default function WorkTree() {
                 >
                   新建子节点
                 </Dropdown.Item>
+                <Dropdown.Item
+                  onClick={() =>
+                    setCreateTarget({
+                      id: w.id,
+                      title: w.title,
+                      kind: w.kind,
+                      // 文章 = work 节点。层级就是**你点的那一层**，不必再选；
+                      // 下面的「新建子节点」则保留"选层级"的能力（系列下还能再挂系列）。
+                      presetKind: 'work',
+                    })
+                  }
+                  disabled={w.kind === 'work'}
+                >
+                  新增文章
+                </Dropdown.Item>
                 <Dropdown.Item onClick={() => setMoveNode(w)}>移动到…</Dropdown.Item>
-                <Dropdown.Item onClick={() => nav(folderPath(w.id))}>打开资料夹</Dropdown.Item>
+                <Dropdown.Item onClick={() => nav(folderPath(w.id))}>访问资料夹</Dropdown.Item>
                 <Dropdown.Item
                   onClick={() => {
                     setAiPanelOpen(true)
-                    nav(workPath(w.id, w.slug))
+                    nav(workPath(w.id))
                   }}
                 >
                   Altas 建档
                 </Dropdown.Item>
-                <Dropdown.Item onClick={() => togglePin(w.id)}>
-                  {pinned ? '取消置顶' : '置顶'}
+                <Dropdown.Item
+                  onClick={() => togglePin(w.id)}
+                  // 满了就禁掉并说明原因（点不动又没有解释，比不给点更让人困惑）
+                  disabled={!pinned && pinnedIds.length >= MAX_PINS}
+                >
+                  {pinned ? '取消置顶' : pinnedIds.length >= MAX_PINS ? `置顶（已满 ${MAX_PINS}）` : '置顶'}
                 </Dropdown.Item>
                 <Dropdown.Item
                   onClick={() => void setVisibility(w.id, w.visibility !== 'public')}
@@ -184,9 +223,10 @@ export default function WorkTree() {
               ? [selectedId]
               : []
         }
+        expandedKeys={expandedKeys}
+        onExpand={(keys) => setExpandedKeys(keys as string[])}
         onSelect={onSelect}
         renderLabel={renderLabel}
-        expandAll
         filterTreeNode={false}
         showLine={false}
         style={{ background: 'transparent' }}

@@ -52,7 +52,7 @@ export default function SearchModal({ open, onClose }: { open: boolean; onClose:
     (hit: SearchHit) => {
       onClose()
       // 只用 UUID 定位：资料命中不一定知道父作品
-      if (hit.kind === 'work') nav(workPath(hit.id, hit.slug))
+      if (hit.kind === 'work') nav(workPath(hit.id))
       else nav(docPath(UNKNOWN_WORK_ID, hit.id))
     },
     [nav, onClose],

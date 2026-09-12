@@ -4,6 +4,8 @@ import type {
   CreateRunBody,
   CreateWorkBody,
   Doc,
+  GameAtlasSearchEntry,
+  GameAtlasSuggestion,
   LibraryLink,
   LibrarySourceInfo,
   Me,
@@ -16,6 +18,7 @@ import type {
   RunEvent,
   RuntimeInfo,
   SearchHit,
+  Session,
   Settings,
   SettingsPayload,
   Work,
@@ -221,6 +224,25 @@ export function getRun(
   )
 }
 
+// --- Sessions（会话 = 一段连续对话） ---
+
+/** 列出会话。target 省略 = 全部会话（工单页要的就是"所有可继续的对话"）。 */
+export function listSessions(target?: string): Promise<{ sessions: Session[] }> {
+  return request(`/api/sessions${qs({ target })}`)
+}
+
+export function createSession(body: { target: string; title?: string }): Promise<{ session: Session }> {
+  return request('/api/sessions', { method: 'POST', body: JSON.stringify(body) })
+}
+
+export function renameSession(id: string, title: string): Promise<{ ok: boolean }> {
+  return request(`/api/sessions/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) })
+}
+
+export function deleteSession(id: string): Promise<{ ok: boolean }> {
+  return request(`/api/sessions/${id}`, { method: 'DELETE' })
+}
+
 // --- Library ---
 
 // 库同步（Emby / Komga / GameAtlas）属首期范围外，接口保留
@@ -232,6 +254,59 @@ export function syncLibrary(source?: string): Promise<{ runId: string }> {
   return request('/api/library/sync', {
     method: 'POST',
     body: JSON.stringify({ source }),
+  })
+}
+
+// --- Library · GameAtlas（孪生：载体对位 = 游戏）---
+
+/** 集合页建档建议：GameAtlas 里属本系列、还没挂链的条目。 */
+export function suggestGameAtlas(
+  workId: string,
+): Promise<{ suggestions: GameAtlasSuggestion[]; gameatlasUrl: string }> {
+  return request(`/api/library/gameatlas/suggest?workId=${encodeURIComponent(workId)}`)
+}
+
+/** 一键建档：建 stub 子节点并挂上 GameAtlas 外链。 */
+export function archiveGameAtlasEntry(
+  workId: string,
+  publicId: string,
+): Promise<{ work: Work; link: LibraryLink }> {
+  return request('/api/library/gameatlas/archive', {
+    method: 'POST',
+    body: JSON.stringify({ workId, publicId }),
+  })
+}
+
+/** 反哺：把节点正文（可选带简介）写回 GameAtlas 条目。 */
+export function pushGameAtlasWiki(
+  workId: string,
+  summary?: string,
+): Promise<{ ok: boolean; gameUrl?: string; summary?: string }> {
+  return request('/api/library/gameatlas/push', {
+    method: 'POST',
+    body: JSON.stringify(summary != null ? { workId, summary } : { workId }),
+  })
+}
+
+/** 关联已有条目：按标题/别名/系列名子串搜 GameAtlas（空白 = 全量）。 */
+export function searchGameAtlas(
+  q: string,
+): Promise<{ entries: GameAtlasSearchEntry[]; gameatlasUrl: string }> {
+  return request(`/api/library/gameatlas/search?q=${encodeURIComponent(q)}`)
+}
+
+/** 把已有节点关联到一条 GameAtlas 条目。 */
+export function linkGameAtlas(workId: string, publicId: string): Promise<{ link: LibraryLink }> {
+  return request('/api/library/gameatlas/link', {
+    method: 'POST',
+    body: JSON.stringify({ workId, publicId }),
+  })
+}
+
+/** 解除节点的 GameAtlas 关联（只动外链，正文不受影响）。 */
+export function unlinkGameAtlas(workId: string): Promise<{ ok: boolean }> {
+  return request(`/api/library/gameatlas/link?workId=${encodeURIComponent(workId)}`, {
+    method: 'DELETE',
   })
 }
 

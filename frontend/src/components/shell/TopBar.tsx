@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { Avatar, Breadcrumb, Button, Dropdown, Toast, Tooltip } from '@douyinfe/semi-ui'
 import {
@@ -9,6 +9,7 @@ import {
   IconHistory,
   IconLock,
   IconMore,
+  IconSetting,
   IconSun,
   IconMoon,
 } from '@douyinfe/semi-icons'
@@ -26,6 +27,11 @@ export default function TopBar() {
   const params = useParams()
   const { nodes, setAiPanelOpen, docMode, setDocMode, me, refreshMe, refreshTree } = useAppStore()
   const nav2 = useNavigate()
+  // 主题切换从"…"菜单挪到了问 Altas 旁边（一眼可及）；侧栏那个按钮拆掉，
+  // 避免两处状态各记各的。
+  const [theme, setTheme] = useState<'light' | 'dark'>(() =>
+    document.body.getAttribute('theme-mode') === 'dark' ? 'dark' : 'light',
+  )
 
   const doLogout = async () => {
     const { logout } = await import('../../lib/api')
@@ -64,7 +70,7 @@ export default function TopBar() {
     if (!onDoc || path.length === 0) return [ROOT_CRUMB, { name: '首页' }]
     const crumbs: { name: string; path?: string }[] = [
       ROOT_CRUMB,
-      ...path.map((n) => ({ name: n.title, path: workPath(n.id, n.slug) })),
+      ...path.map((n) => ({ name: n.title, path: workPath(n.id) })),
     ]
     // 资料夹模式：面包屑补一级「资料夹」（左栏此时是资料列表）
     if (/\/folder(\/|$)/.test(loc.pathname)) {
@@ -169,33 +175,30 @@ export default function TopBar() {
           </Button>
         </Tooltip>
         )}
+        {me.authed && (
+        <Tooltip content={theme === 'dark' ? '浅色模式' : '深色模式'} position="bottom">
+          <Button
+            theme="borderless"
+            type="tertiary"
+            size="small"
+            icon={theme === 'dark' ? <IconSun /> : <IconMoon />}
+            aria-label={theme === 'dark' ? '浅色模式' : '深色模式'}
+            onClick={() => setTheme(toggleTheme())}
+          />
+        </Tooltip>
+        )}
         {me.authed ? (
         <Dropdown
           trigger="click"
           position="bottomRight"
           render={
             <Dropdown.Menu>
-              <Dropdown.Item onClick={() => nav('/runs')}>Altas 工单</Dropdown.Item>
-              <Dropdown.Item onClick={() => nav('/settings')}>设置</Dropdown.Item>
-              <Dropdown.Item
-                icon={<IconSun size="small" />}
-                onClick={() => {
-                  if (document.body.getAttribute('theme-mode') !== 'dark') toggleTheme()
-                }}
-              >
-                浅色模式
-              </Dropdown.Item>
-              <Dropdown.Item
-                icon={<IconMoon size="small" />}
-                onClick={() => {
-                  if (document.body.getAttribute('theme-mode') !== 'light') toggleTheme()
-                }}
-              >
-                深色模式
-              </Dropdown.Item>
-              <Dropdown.Divider />
+              {/* 「最近工单」原先和这个并排、目的地却同样指向 /runs——重复项，删掉。 */}
               <Dropdown.Item icon={<IconHistory size="small" />} onClick={() => nav('/runs')}>
-                最近工单
+                Altas 工单
+              </Dropdown.Item>
+              <Dropdown.Item icon={<IconSetting size="small" />} onClick={() => nav('/settings')}>
+                设置
               </Dropdown.Item>
             </Dropdown.Menu>
           }

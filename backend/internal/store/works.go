@@ -17,7 +17,7 @@ func scanWork(row interface{ Scan(...any) error }) (*domain.Work, error) {
 		aliases   string
 		contentMd sql.NullString
 	)
-	err := row.Scan(&w.ID, &parentID, &w.Kind, &medium, &w.Title, &w.Slug,
+	err := row.Scan(&w.ID, &parentID, &w.Kind, &medium, &w.Title,
 		&aliases, &contentMd, &w.ContentVer, &w.Status, &w.Visibility, &w.SortOrder,
 		&w.CreatedAt, &w.UpdatedAt)
 	if err != nil {
@@ -40,7 +40,7 @@ func scanWork(row interface{ Scan(...any) error }) (*domain.Work, error) {
 	return &w, nil
 }
 
-const workCols = `id, parent_id, kind, medium, title, slug, aliases_json, content_md, content_ver, status, visibility, sort_order, created_at, updated_at`
+const workCols = `id, parent_id, kind, medium, title, aliases_json, content_md, content_ver, status, visibility, sort_order, created_at, updated_at`
 
 // CreateWork inserts a new work node.
 func (s *Store) CreateWork(body domain.CreateWorkBody) (*domain.Work, error) {
@@ -54,25 +54,6 @@ func (s *Store) CreateWork(body domain.CreateWorkBody) (*domain.Work, error) {
 	}
 	id := NewID()
 	now := Now()
-	slug := ""
-	if body.Slug != nil && *body.Slug != "" {
-		slug = *body.Slug
-	} else {
-		slug = slugify(body.Title)
-	}
-	// ensure unique slug
-	base := slug
-	for i := 2; ; i++ {
-		var n int
-		err := s.DB.QueryRow(`SELECT COUNT(*) FROM works WHERE slug = ?`, slug).Scan(&n)
-		if err != nil {
-			return nil, err
-		}
-		if n == 0 {
-			break
-		}
-		slug = fmt.Sprintf("%s-%d", base, i)
-	}
 	var parent any
 	if body.ParentID != nil && *body.ParentID != "" {
 		// verify parent exists
@@ -95,9 +76,9 @@ func (s *Store) CreateWork(body domain.CreateWorkBody) (*domain.Work, error) {
 	} else if v := s.NewNodeVisibility(); v != "" {
 		visibility = v
 	}
-	_, err := s.DB.Exec(`INSERT INTO works (id, parent_id, kind, medium, title, slug, aliases_json, content_md, content_ver, status, visibility, sort_order, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, '[]', NULL, 0, 'stub', ?, 0, ?, ?)`,
-		id, parent, string(body.Kind), medium, body.Title, slug, string(visibility), now, now)
+	_, err := s.DB.Exec(`INSERT INTO works (id, parent_id, kind, medium, title, aliases_json, content_md, content_ver, status, visibility, sort_order, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, '[]', NULL, 0, 'stub', ?, 0, ?, ?)`,
+		id, parent, string(body.Kind), medium, body.Title, string(visibility), now, now)
 	if err != nil {
 		return nil, err
 	}
@@ -107,15 +88,6 @@ func (s *Store) CreateWork(body domain.CreateWorkBody) (*domain.Work, error) {
 // GetWork returns one work by id.
 func (s *Store) GetWork(id string) (*domain.Work, error) {
 	w, err := scanWork(s.DB.QueryRow(`SELECT `+workCols+` FROM works WHERE id = ?`, id))
-	if err == sql.ErrNoRows {
-		return nil, ErrNotFound{What: "work"}
-	}
-	return w, err
-}
-
-// GetWorkBySlug returns one work by slug.
-func (s *Store) GetWorkBySlug(slug string) (*domain.Work, error) {
-	w, err := scanWork(s.DB.QueryRow(`SELECT `+workCols+` FROM works WHERE slug = ?`, slug))
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound{What: "work"}
 	}
@@ -248,7 +220,7 @@ func (s *Store) DeleteWork(id string) error {
 // ListTree returns flat work summaries ordered for tree display.
 func (s *Store) ListTree() ([]domain.WorkSummary, error) {
 	rows, err := s.DB.Query(`
-		SELECT w.id, w.parent_id, w.kind, w.medium, w.title, w.slug, w.status, w.visibility, w.sort_order, w.updated_at,
+		SELECT w.id, w.parent_id, w.kind, w.medium, w.title, w.status, w.visibility, w.sort_order, w.updated_at,
 		       CASE WHEN w.content_md IS NOT NULL AND w.content_md != '' THEN 1 ELSE 0 END AS has_content,
 		       CASE WHEN EXISTS (SELECT 1 FROM library_links l WHERE l.work_id = w.id) THEN 1 ELSE 0 END AS has_link
 		FROM works w
@@ -265,7 +237,7 @@ func (s *Store) ListTree() ([]domain.WorkSummary, error) {
 			medium     sql.NullString
 			hasC, hasL int
 		)
-		if err := rows.Scan(&n.ID, &parentID, &n.Kind, &medium, &n.Title, &n.Slug, &n.Status, &n.Visibility, &n.SortOrder, &n.UpdatedAt, &hasC, &hasL); err != nil {
+		if err := rows.Scan(&n.ID, &parentID, &n.Kind, &medium, &n.Title, &n.Status, &n.Visibility, &n.SortOrder, &n.UpdatedAt, &hasC, &hasL); err != nil {
 			return nil, err
 		}
 		if parentID.Valid {
@@ -343,32 +315,6 @@ func (s *Store) PutWorkContent(id string, body domain.PutContentBody) (*domain.C
 		return nil, err
 	}
 	return &domain.ContentCommitResult{ID: id, ContentVer: newVer, RevisionID: revID}, nil
-}
-
-// HasChildren reports whether a work has child nodes.
-func (s *Store) HasChildren(id string) (bool, error) {
-	var n int
-	err := s.DB.QueryRow(`SELECT COUNT(*) FROM works WHERE parent_id = ?`, id).Scan(&n)
-	return n > 0, err
-}
-
-// EnsureUniqueSlug is a helper for imports.
-func (s *Store) EnsureUniqueSlug(prefix, title string) (string, error) {
-	slug := slugify(title)
-	if prefix != "" {
-		slug = prefix + "-" + slug
-	}
-	base := slug
-	for i := 2; ; i++ {
-		var n int
-		if err := s.DB.QueryRow(`SELECT COUNT(*) FROM works WHERE slug = ?`, slug).Scan(&n); err != nil {
-			return "", err
-		}
-		if n == 0 {
-			return slug, nil
-		}
-		slug = fmt.Sprintf("%s-%d", base, i)
-	}
 }
 
 // listIDs is a small helper.

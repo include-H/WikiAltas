@@ -4,6 +4,9 @@
 // 因此首期把置顶保存在本地（单用户产品足够），后端字段就绪后可无损迁移。
 const KEY = 'wikiatlas.pinned.v1'
 
+/** 置顶数量上限：不设限的话首页置顶区迟早等于整棵树，置顶就没有意义了。 */
+export const MAX_PINS = 6
+
 export function readPins(): string[] {
   try {
     const raw = localStorage.getItem(KEY)

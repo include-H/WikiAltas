@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Banner, Button, Card, Input, Toast, Typography } from '@douyinfe/semi-ui'
-import { IconEyeClosed, IconEyeOpened, IconLock } from '@douyinfe/semi-icons'
+import { IconLock } from '@douyinfe/semi-icons'
 import { login } from '../lib/api'
 import { useAppStore } from '../lib/store'
 
@@ -15,7 +15,6 @@ export default function LoginView() {
   const nav = useNavigate()
   const { refreshMe, me, meLoaded } = useAppStore()
   const [password, setPassword] = useState('')
-  const [show, setShow] = useState(false)
   const [busy, setBusy] = useState(false)
   const [lockedFor, setLockedFor] = useState<number | null>(null)
 
@@ -63,20 +62,12 @@ export default function LoginView() {
         )}
 
         <div className="login-field">
+          {/* 只用 Semi 原生的密码态：`mode="password"` 自己就带显隐按钮。
+              再塞一个 suffix 会渲染出**两个眼睛图标**干同一件事（实测踩到）。 */}
           <Input
-            mode={show ? undefined : 'password'}
+            mode="password"
             value={password}
             prefix={<IconLock />}
-            suffix={
-              <Button
-                theme="borderless"
-                type="tertiary"
-                size="small"
-                icon={show ? <IconEyeOpened /> : <IconEyeClosed />}
-                aria-label={show ? '隐藏密码' : '显示密码'}
-                onClick={() => setShow((v) => !v)}
-              />
-            }
             placeholder="请输入访问密码"
             autoFocus
             disabled={lockedFor != null}

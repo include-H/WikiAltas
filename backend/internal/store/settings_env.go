@@ -1,7 +1,6 @@
 package store
 
 import (
-	"net/url"
 	"strings"
 )
 
@@ -28,13 +27,4 @@ func (s *Store) GetSecret(key string) string {
 // ExaAPIKey 返回 Exa key（只来自设置页，存 settings 表）。
 func (s *Store) ExaAPIKey() string {
 	return s.GetSecret("exa_api_key")
-}
-
-// MaskURL 只保留 host，用于日志/展示（避免把密钥拼进日志）。
-func MaskURL(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
-		return raw
-	}
-	return u.Host
 }

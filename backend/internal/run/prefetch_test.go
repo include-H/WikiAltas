@@ -33,12 +33,15 @@ func TestContextBriefForSeries(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	var kidID string
 	for _, title := range []string{"最终幻想13", "最终幻想 零式"} {
-		if _, err := st.CreateWork(domain.CreateWorkBody{
+		k, err := st.CreateWork(domain.CreateWorkBody{
 			Kind: domain.WorkKindWork, Title: title, ParentID: &series.ID,
-		}); err != nil {
+		})
+		if err != nil {
 			t.Fatal(err)
 		}
+		kidID = k.ID
 	}
 	if _, err := st.CreateDoc(series.ID, domain.CreateDocBody{Title: "神话基底梳理"}); err != nil {
 		t.Fatal(err)
@@ -52,13 +55,18 @@ func TestContextBriefForSeries(t *testing.T) {
 		"现有章节：1. 系列概览 / 2. 作品构成",
 		"正文开头",
 		"下级节点（2）",
-		"最终幻想13(work,stub)",
-		"最终幻想 零式(work,stub)",
-		"资料夹（1 份非标资料）：神话基底梳理",
+		"《最终幻想13》(work,stub)",
+		"《最终幻想 零式》(work,stub)",
+		"《神话基底梳理》",
 	} {
 		if !strings.Contains(brief, want) {
 			t.Fatalf("brief 缺少 %q\n---\n%s", want, brief)
 		}
+	}
+	// 清单里必须**带 id**：只给标题的话，模型想读别家条目还得先调 get_tree 换 id，
+	// 多一跳就常常不跳——"能连读别家条目"于是停在纸面上。
+	if !strings.Contains(brief, kidID) {
+		t.Fatalf("brief 里没有子节点的 id（%s），模型还得先去换：\n%s", kidID, brief)
 	}
 }
 

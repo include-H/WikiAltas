@@ -136,8 +136,27 @@ body {
 }
 
 .outline-item.level-3 {
-  padding-left: 22px;
   color: var(--semi-color-text-2);
+}
+
+/* 树形大纲的展开箭头：有子级的行才显示；展开时转 90°。叶子留空位对齐。 */
+.outline-caret {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-right: 2px;
+  color: var(--semi-color-text-2);
+  transition: transform 0.12s ease;
+  cursor: pointer;
+}
+.outline-caret.is-open {
+  transform: rotate(90deg);
+}
+.outline-caret.is-leaf {
+  visibility: hidden;
 }
 
 .outline-item:hover {
@@ -147,7 +166,7 @@ body {
 .outline-item.active {
   background: var(--semi-color-primary-light-default);
   color: var(--semi-color-primary);
-  font-weight: 600;
+  /* 不加粗：加粗在滚动时逐行切换，视觉上像"某一格在放大/收缩"（用户原话）。 */
 }
 
 .outline-empty {
@@ -167,6 +186,9 @@ body {
 
 
 .work-content {
+  /* wiki 条目按规范必须带「参考资料」外链，长 URL 是不可断 token——不换行就会把
+     整列顶宽、正文被切。和 AI 面板同一条规则（实测：注入长 URL 后 scrollWidth 翻倍）。 */
+  overflow-wrap: anywhere;
   flex: 1;
   min-width: 0;
   display: flex;
@@ -215,43 +237,65 @@ body {
   text-align: center;
 }
 
-/* Markdown preview */
+/* Markdown preview：与编辑器同一套比例（正文 16/1.65，标题 24/20/18） */
 .md-preview {
   max-width: 760px;
   margin: 0 auto;
-  font-size: 14px;
-  line-height: 1.75;
+  font-size: 16px;
+  line-height: 1.65;
   color: var(--semi-color-text-0);
 }
 
 .md-preview h1,
 .md-preview h2,
 .md-preview h3,
-.md-preview h4 {
+.md-preview h4,
+.md-preview h5,
+.md-preview h6 {
   font-weight: 600;
-  line-height: 1.35;
-  margin: 1.4em 0 0.6em;
+  line-height: 1.4;
   scroll-margin-top: 16px;
 }
 
+.md-preview h1 {
+  font-size: 26px;
+  line-height: 1.35;
+  margin: 28px 0 8px;
+}
+
 .md-preview h2 {
-  font-size: 20px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--semi-color-border);
+  font-size: 22px;
+  line-height: 1.4;
+  margin: 24px 0 6px;
 }
 
 .md-preview h3 {
+  font-size: 19px;
+  line-height: 1.45;
+  margin: 20px 0 4px;
+}
+
+.md-preview h4 {
+  font-size: 17px;
+}
+
+.md-preview h5 {
   font-size: 16px;
 }
 
+.md-preview h6 {
+  font-size: 15px;
+  color: var(--semi-color-text-1);
+}
+
 .md-preview p {
-  margin: 0.75em 0;
+  margin: 10px 0;
 }
 
 .md-preview ul,
 .md-preview ol {
   padding-left: 1.4em;
-  margin: 0.6em 0;
+  margin: 10px 0;
 }
 
 .md-preview code {
@@ -264,9 +308,11 @@ body {
 
 .md-preview pre {
   background: var(--semi-color-fill-0);
-  padding: 12px 16px;
+  padding: 12px 14px;
   border-radius: var(--semi-border-radius-large);
   overflow: auto;
+  font-size: 13.5px;
+  line-height: 1.6;
 }
 
 .md-preview pre code {
@@ -277,19 +323,21 @@ body {
 .md-preview table {
   border-collapse: collapse;
   width: 100%;
-  margin: 1em 0;
-  font-size: 13px;
+  margin: 12px 0;
+  font-size: 14px;
+  line-height: 1.6;
 }
 
 .md-preview th,
 .md-preview td {
   border: 1px solid var(--semi-color-border);
-  padding: 6px 10px;
+  padding: 8px 12px;
   text-align: left;
 }
 
 .md-preview th {
   background: var(--semi-color-fill-0);
+  font-weight: 600;
 }
 
 .md-preview a {
@@ -300,12 +348,70 @@ body {
   max-width: 100%;
 }
 
+/* 对话列表的滚动条：Semi 自己带了 `-scroll-hidden` 修饰类（我们确实拿到了），
+   但它只写了 `::-webkit-scrollbar{display:none}`——**Firefox 不认这个伪元素**，
+   而 `.semi-ai-chat-dialogue-list` 又是 `overflow-y: scroll`（恒画一条），
+   于是非 WebKit 浏览器上那条滚动条一直杵着。这里用标准属性把 Semi 自己的
+   意图补完；滚动本身不受影响（滚轮/触控板照常）。
+   注：这是全仓唯一一条写在 .semi-* 上的规则，理由见上——Semi 没给等价 prop。 */
+.semi-ai-chat-dialogue-list {
+  scrollbar-width: none;
+}
+
 /* ===== AI Panel ===== */
+
+/* 对话内容这条 flex 链，每一层都是默认的 `min-width: auto`
+   （= 自动最小尺寸取内容 min-content）。于是只要**任何一条消息**里有不肯缩的东西
+   （带 nowrap 的工具卡摘要、长 token、代码块…），整条链就被顶宽，
+   对话列表随即出横向滚动条——哪怕别的消息都很短。
+   实测过一次：单条消息把 465px 的列表顶到 874px。
+   让每一层都允许收缩，内容各自的溢出由各自处理（工具卡/代码块/长 token 都已收口）。
+   Semi 没给对应 prop，这是从外部补的一处；作用域收在 .ai-panel 里，不外溢。 */
+.ai-panel .semi-ai-chat-dialogue-container,
+.ai-panel .semi-ai-chat-dialogue-inner,
+.ai-panel .semi-ai-chat-dialogue-content,
+.ai-panel .semi-ai-chat-dialogue-content-wrapper,
+.ai-panel .semi-ai-chat-dialogue-content-inner {
+  min-width: 0;
+}
+
+/* 对话头像：不给内容时 Semi 画的是空灰圆，每屏都看得见。
+   AI 用紫（VISUAL_SPEC §2：紫只准出现在 AI 元素上），用户用主题主色。 */
+.ai-avatar-altas {
+  background: var(--semi-color-ai-purple);
+  color: var(--semi-color-white);
+}
+
+.ai-avatar-user {
+  background: var(--semi-color-primary);
+  color: var(--semi-color-white);
+  font-size: 12px;
+}
+
 .ai-panel {
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  /* 圆角 + 裁剪在面板自己身上做：它是 Resizable 把手的**兄弟**，
+     在这儿裁剪不会像在 .ai-window 上那样把角上的把手一起裁掉。 */
+  border-radius: var(--semi-border-radius-large);
+  overflow: hidden;
+  /*
+   * 面板的两层底：画布（对话区）+ 浮面（面板头/工具卡片）。
+   * 飞书主题把 bg-0~bg-3 全映射成同一档（浅色是白、深色是最暗），
+   * 光靠 bg-* 分不出层次，所以在这里定一对语义变量：
+   * 浅色 = 浅灰画布 + 白卡片；深色 = 最暗画布 + 亮一档的卡片。
+   * 两边都保证"浮面比画布亮"，卡片才有浮起来的感觉。
+   */
+  --ai-canvas: var(--semi-color-tertiary-light-default);
+  --ai-surface: var(--semi-color-bg-0);
+  background: var(--ai-canvas);
+}
+
+body[theme-mode='dark'] .ai-panel {
+  --ai-canvas: var(--semi-color-bg-0);
+  --ai-surface: var(--semi-color-bg-1);
 }
 
 .ai-panel-header {
@@ -313,6 +419,7 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 12px 14px;
+  background: var(--ai-surface);
   border-bottom: 1px solid var(--semi-color-border);
   flex-shrink: 0;
 }
@@ -324,6 +431,7 @@ body {
   overflow-y: auto;
   overflow-x: hidden;
   padding: 14px;
+  background: var(--ai-canvas);
 }
 
 .ai-empty {
@@ -360,8 +468,99 @@ body {
 
 .ai-panel-input {
   flex-shrink: 0;
+  background: var(--ai-surface);
   border-top: 1px solid var(--semi-color-border);
   padding: 12px 14px 14px;
+}
+
+/* 输入框 footer 的操作区：Semi 的 footer 是 space-between 横排，我们的环若作为
+   独立孩子会掉进"正中间"。把环和发送键包成一个组，footer 只剩两个孩子：
+   配置在左、这组在右——环紧挨发送键。 */
+.ai-input-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* run 边界行（对话前/对话后的事实）：细、灰、不抢戏——它是状态，不是内容。
+   对齐 dsh 的 turn/start · turn/end：生命周期事实贴着内容的前后两端。 */
+.ai-turn-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 2px 0 6px;
+  color: var(--semi-color-text-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.ai-turn-row .ai-turn-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--semi-color-text-2);
+  transform: translateY(-2px);
+}
+.ai-turn-row.is-warn .ai-turn-dot {
+  background: var(--semi-color-warning);
+}
+.ai-turn-row.is-error .ai-turn-dot {
+  background: var(--semi-color-danger);
+}
+.ai-turn-row.is-error .ai-turn-text {
+  color: var(--semi-color-danger);
+}
+
+/* 叙事正文：Semi 内容区写死 14px，字号只能从 MarkdownRender 根节点（我们自己的类名）改 */
+.ai-md {
+  font-size: 15px;
+  line-height: 1.75;
+  color: var(--semi-color-text-0);
+  /* 长不可断 token（URL、长英文词）必须换行而不是往右顶：列一被顶宽，
+     整个对话容器就出横向滚动条，正文全被切（实测：一条 Wikipedia 链接
+     就把助手列推宽）。`anywhere` 而不是 `break-word`——只有它参与
+     min-content 计算，flex 子项才会真的缩回去。 */
+  overflow-wrap: anywhere;
+}
+
+/* 代码块自己滚，别把消息顶宽。
+   `<pre>` 走浏览器默认的 `white-space: pre`：长行不换行，它的 min-content 就是
+   那一整行——flex 链（content → inner → container → wrapper）的自动最小尺寸被
+   一路撑开，最后 wrapper 比 .semi-ai-chat-dialogue-list 还宽，列表于是出横向
+   滚动条（真实观测：DevTools 里 list 固定、wrapper 往右溢出）。
+   `overflow-x: auto` 同时也是解药：overflow 非 visible 时，flex 子项的自动最小
+   尺寸按 0 算，链就收得住。 */
+.ai-md pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* 内联代码里的长 token 换行（pre 内部由 white-space:pre 兜着，不受这条影响） */
+.ai-md code {
+  overflow-wrap: anywhere;
+}
+
+.ai-md p {
+  margin: 0 0 8px;
+}
+
+.ai-md p:last-child,
+.ai-md > :last-child {
+  margin-bottom: 0;
+}
+
+.ai-md ul,
+.ai-md ol {
+  margin: 4px 0 8px;
+  padding-left: 20px;
+}
+
+.ai-md li {
+  margin: 2px 0;
+}
+
+.ai-md li > p {
+  margin: 0;
 }
 
 /* Run timeline */
@@ -448,6 +647,154 @@ body {
   background: var(--semi-color-fill-0);
 }
 
+.ai-sources {
+  margin: 6px 0 2px;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.9;
+  color: var(--semi-color-text-1);
+  overflow-wrap: anywhere;
+}
+
+.ai-sources li::marker {
+  color: var(--semi-color-text-3);
+}
+
+.ai-sources a {
+  color: var(--semi-color-text-1);
+  text-decoration: none;
+}
+
+.ai-sources a:hover {
+  color: var(--semi-color-primary);
+  text-decoration: underline;
+}
+
+/* 折叠条里的工具产物卡片（Semi 官方代码卡片外面只包一层限高，不碰 .semi-* 内部） */
+.ai-artifact {
+  margin-top: 6px;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.ai-artifact-note {
+  margin-top: 4px;
+  color: var(--semi-color-text-2);
+  font-size: 12px;
+}
+
+/* 头部动作区（新对话 / 会话列表 / 收起） */
+.ai-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+/* 会话列表（本页面的会话：召回 / 改名 / 删除） */
+.ai-session-list {
+  width: 300px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.ai-session-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+}
+
+.ai-session-empty {
+  padding: 14px 10px;
+  color: var(--semi-color-text-2);
+  font-size: 12px;
+}
+
+.ai-session-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: var(--semi-border-radius-medium);
+  cursor: pointer;
+}
+
+.ai-session-item:hover {
+  background: var(--semi-color-fill-0);
+}
+
+.ai-session-item.is-active {
+  background: var(--semi-color-primary-light-default);
+}
+
+.ai-session-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--semi-color-text-3);
+}
+
+.ai-session-dot.is-running {
+  background: var(--semi-color-primary);
+}
+.ai-session-dot.is-completed {
+  background: var(--semi-color-success);
+}
+.ai-session-dot.is-failed {
+  background: var(--semi-color-danger);
+}
+.ai-session-dot.is-interrupted {
+  background: var(--semi-color-warning);
+}
+.ai-session-dot.is-blank {
+  background: var(--semi-color-border);
+}
+
+.ai-session-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.ai-session-title {
+  font-size: 13px;
+  color: var(--semi-color-text-0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ai-session-item.is-active .ai-session-title {
+  color: var(--semi-color-primary);
+  font-weight: 600;
+}
+
+.ai-session-meta {
+  font-size: 11px;
+  color: var(--semi-color-text-2);
+}
+
+.ai-session-ops {
+  display: none;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.ai-session-item:hover .ai-session-ops,
+.ai-session-item.is-active .ai-session-ops {
+  display: inline-flex;
+}
+
+/* 会话很长时的提示行 */
+.ai-thread-more {
+  padding: 0 0 10px;
+  text-align: center;
+}
+
 /* ===== Search modal ===== */
 .search-hits {
   display: flex;
@@ -516,14 +863,313 @@ body {
   margin-bottom: 4px;
 }
 
-.run-list-tabs {
-  margin-bottom: 4px;
+.run-list-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
 }
 
 .run-list-tools {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+/* 输入框上方的任务面板（照 dsh 的 conversation.input.dock）：
+   默认收起、点开向上展开；列表自己滚动，不把输入框顶走。 */
+.todo-dock {
+  margin-bottom: 6px;
+  border: 1px solid var(--semi-color-border);
+  border-radius: var(--semi-border-radius-medium);
+  background: var(--semi-color-fill-0);
+  overflow: hidden;
+}
+
+.todo-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--semi-color-text-1);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.todo-head:hover {
+  background: var(--semi-color-fill-1);
+}
+
+.todo-lead {
+  display: inline-flex;
+  color: var(--semi-color-text-2);
+}
+
+.todo-title {
+  font-weight: 600;
+}
+
+.todo-progress {
+  color: var(--semi-color-text-2);
+}
+
+/* 靠右：收起时朝上（暗示"点开往上看"），展开时朝下 */
+.todo-chevron {
+  display: inline-flex;
+  margin-left: auto;
+  color: var(--semi-color-text-2);
+}
+
+.todo-list {
+  margin: 0;
+  padding: 2px 10px 8px;
+  list-style: none;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.todo-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--semi-color-text-1);
+}
+
+.todo-glyph {
+  display: inline-flex;
+  flex: none;
+  padding-top: 2px;
+}
+
+.todo-glyph-done {
+  color: var(--semi-color-success);
+}
+
+.todo-glyph-active {
+  color: var(--semi-color-primary);
+  animation: todo-spin 1.4s linear infinite;
+}
+
+.todo-glyph-pending {
+  color: var(--semi-color-text-3);
+}
+
+.todo-item[data-status='completed'] .todo-content {
+  color: var(--semi-color-text-2);
+}
+
+/* 完成的划掉——一眼看出哪些已经过去 */
+.todo-item[data-status='completed'] .todo-content {
+  text-decoration: line-through;
+}
+
+@keyframes todo-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── 工具卡：function_call 输出项（ToolCard.tsx） ──
+   一行 = 状态图标 + 人话措辞 + 摘要 + diff/耗时；点开是产物与参数。
+   信息全部来自这一项本身（结果摘要挂在 item.wikiatlas 下），不是从别处拼的。 */
+.tool-card {
+  margin: 2px 0;
+  /* 工具卡绝不许比容器宽：它下面每一项都可能带着 nowrap 或 flex-shrink:0，
+     只要有一个不肯缩，整条 head 的 min-content 就等于那一行的全长（实测 746px），
+     flex 链会被一路撑开，最后对话列表出横向滚动条。 */
+  min-width: 0;
+  max-width: 100%;
+}
+
+.tool-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--semi-color-text-2);
+  font-size: 13px;
+  line-height: 22px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tool-card-head:hover {
+  color: var(--semi-color-text-0);
+}
+
+.tool-card-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.tool-card.is-running .tool-card-icon {
+  animation: todo-spin 1.2s linear infinite;
+}
+
+.tool-card.is-failed .tool-card-label {
+  color: var(--semi-color-danger);
+}
+
+.tool-card-label {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-card-detail {
+  min-width: 0;
+  flex: 1;
+}
+
+.tool-card-diff {
+  display: inline-flex;
+  gap: 4px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-card-diff-add {
+  color: var(--semi-color-success);
+}
+
+.tool-card-diff-del {
+  color: var(--semi-color-danger);
+}
+
+.tool-card-time {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-card-caret {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.tool-card-body {
+  padding: 2px 0 6px 22px;
+}
+
+/* 失败原因全文（折叠时那一行是 nowrap，只能打省略号；展开看这里） */
+.tool-card-error {
+  margin: 4px 0 2px;
+  padding: 6px 8px;
+  border-radius: var(--semi-border-radius-small);
+  background: var(--semi-color-danger-light-default, var(--semi-color-fill-0));
+  color: var(--semi-color-danger);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+/* 展开后的摘要全文（折起那行是截断的，全文在这里） */
+.tool-card-note {
+  margin: 4px 0 2px;
+  padding: 6px 8px;
+  border-radius: var(--semi-border-radius-small);
+  background: var(--semi-color-fill-0);
+  color: var(--semi-color-text-1);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+/* ── 提醒条：宿主的播报与护栏提醒（wikiatlas.notice，NoticeDock.tsx） ──
+   和任务面板同一处（输入框顶部的原生槽）：都是"这个工单现在的状态"。 */
+.notice-dock {
+  margin-bottom: 6px;
+  border: 1px solid var(--semi-color-border);
+  border-radius: var(--semi-border-radius-medium);
+  background: var(--semi-color-fill-0);
+  overflow: hidden;
+}
+
+.notice-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--semi-color-text-1);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notice-head:hover {
+  background: var(--semi-color-fill-1);
+}
+
+.notice-lead {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--semi-color-text-2);
+}
+
+.notice-lead.is-warn {
+  color: var(--semi-color-warning);
+}
+
+.notice-lead.is-error {
+  color: var(--semi-color-danger);
+}
+
+.notice-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notice-chevron {
+  display: inline-flex;
+  flex-shrink: 0;
+  margin-left: auto;
+  color: var(--semi-color-text-2);
+}
+
+.notice-list {
+  margin: 0;
+  padding: 2px 10px 8px;
+  max-height: 160px;
+  overflow: auto;
+  list-style: none;
+}
+
+.notice-item {
+  padding: 2px 0;
+}
+
+/* 工单列表＝对话列表：标题下那行"最近说了什么" */
+.run-cell-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 560px;
+}
+
+/* 对话详情抽屉底部的操作条（重命名 / 继续这段对话） */
+.run-detail-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .run-cell-goal {
@@ -558,22 +1204,6 @@ body {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-}
-
-.run-detail-goal {
-  display: block;
-  font-size: 13px;
-  line-height: 1.7;
-  padding: 10px 12px;
-  border-radius: var(--semi-border-radius-medium);
-  background: var(--semi-color-fill-0);
-}
-
-.run-detail-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
 }
 
 /* ===== Settings ===== */
@@ -629,9 +1259,14 @@ body {
 .settings-view {
   flex: 1;
   overflow: auto;
-  padding: 24px 32px 64px;
+}
+
+/* 限宽的是**内容**不是滚动容器：容器通栏（滚动条落在窗口边），内容居中 900。
+   以前 max-width 加在滚动容器上，宽屏下滚动条悬在屏幕中间、右侧一片死白。 */
+.settings-inner {
   max-width: 900px;
   margin: 0 auto;
+  padding: 24px 32px 64px;
 }
 
 .settings-head {
@@ -745,46 +1380,119 @@ body {
   --bn-font-family: inherit;
 }
 
+/* 正文排版：一套比例，编辑器与阅读态共用（改这里就够）
+   正文 16 / 行高 1.65；标题 26 / 22 / 19 / 17 / 16 / 15。
+   字号走 BlockNote 的 --level 变量：它按 data-level 给 3em/2em/1.3em…，
+   且 level=1 时压根不写 data-level 属性，只能用默认值覆盖，
+   所以第一级要写成不带 [data-level] 的那条。 */
 .bn-root .bn-editor {
   padding: 12px 28px 48px;
   color: var(--semi-color-text-0);
   background: transparent;
   min-height: 280px;
-}
-
-.bn-root .bn-editor .bn-block-content[data-content-type='heading'] {
-  font-weight: 600;
-  line-height: 1.35;
-  scroll-margin-top: 16px;
-}
-
-.bn-root .bn-editor .bn-block-content[data-content-type='heading'][data-level='1'] {
-  font-size: 24px;
-}
-
-.bn-root .bn-editor .bn-block-content[data-content-type='heading'][data-level='2'] {
-  font-size: 20px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--semi-color-border);
-}
-
-.bn-root .bn-editor .bn-block-content[data-content-type='heading'][data-level='3'] {
   font-size: 16px;
 }
 
-.bn-root .bn-editor .bn-block-content[data-content-type='quote'] {
-  border-left: 3px solid var(--semi-color-primary);
-  padding-left: 12px;
-  color: var(--semi-color-text-1);
-  font-style: italic;
-  background: var(--semi-color-fill-0);
+/* 行高放在 .bn-block-outer 上：BlockNote 默认给的是 1.5，太挤 */
+.bn-root .bn-editor .bn-block-outer {
+  line-height: 1.65;
 }
 
+/* 块间距 = 上下 padding 之和（默认 3px+3px，段落挨得太近） */
+.bn-root .bn-editor .bn-block-content {
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
+/* 标题：字号 + 上下留白。选择器要压过 BlockNote 那条
+   .bn-block-outer:not([data-prev-type])>.bn-block>.bn-block-content[data-content-type=heading]
+   （它同时写 font-size 和 font-weight），所以多带一层 .bn-block-outer。 */
+.bn-root .bn-editor .bn-block-outer .bn-block-content[data-content-type='heading'] {
+  --level: 26px;
+  --prev-level: 26px;
+  font-weight: 600;
+  line-height: 1.35;
+  padding-top: 28px;
+  padding-bottom: 8px;
+  scroll-margin-top: 16px;
+}
+
+/* BlockNote 把标题的 font-weight:700 写在 .bn-block-content 上，同权重压不过，
+   直接在标题元素上再声明一次（子元素继承打不过直接声明）。 */
+.bn-root .bn-editor .bn-block-content[data-content-type='heading'] .bn-inline-content {
+  font-weight: 600;
+}
+
+.bn-root .bn-editor .bn-block-outer .bn-block-content[data-content-type='heading'][data-level='2'] {
+  --level: 22px;
+  --prev-level: 22px;
+  line-height: 1.4;
+  padding-top: 24px;
+  padding-bottom: 6px;
+}
+
+.bn-root .bn-editor .bn-block-outer .bn-block-content[data-content-type='heading'][data-level='3'] {
+  --level: 19px;
+  --prev-level: 19px;
+  line-height: 1.45;
+  padding-top: 20px;
+  padding-bottom: 4px;
+}
+
+.bn-root .bn-editor .bn-block-outer .bn-block-content[data-content-type='heading'][data-level='4'] {
+  --level: 17px;
+  --prev-level: 17px;
+  line-height: 1.55;
+  padding-top: 16px;
+}
+
+.bn-root .bn-editor .bn-block-outer .bn-block-content[data-content-type='heading'][data-level='5'] {
+  --level: 16px;
+  --prev-level: 16px;
+  line-height: 1.6;
+  padding-top: 14px;
+}
+
+.bn-root .bn-editor .bn-block-outer .bn-block-content[data-content-type='heading'][data-level='6'] {
+  --level: 15px;
+  --prev-level: 15px;
+  line-height: 1.6;
+  padding-top: 14px;
+  color: var(--semi-color-text-1);
+}
+
+/* 引用：左边一条竖线 + 淡底（飞书的说明块观感） */
+.bn-root .bn-editor .bn-block-content[data-content-type='quote'] {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+.bn-root .bn-editor .bn-block-content[data-content-type='quote'] blockquote {
+  border-left: 3px solid var(--semi-color-primary);
+  border-radius: var(--semi-border-radius-small);
+  padding: 6px 12px;
+  background: var(--semi-color-fill-0);
+  color: var(--semi-color-text-1);
+  font-style: italic;
+}
+
+/* 代码块 */
 .bn-root .bn-editor .bn-block-content[data-content-type='codeBlock'] {
+  font-size: 13.5px;
+  line-height: 1.6;
+  margin: 10px 0;
+}
+
+.bn-root .bn-editor .bn-block-content[data-content-type='codeBlock'] pre {
   background: var(--semi-color-fill-0);
   border-radius: var(--semi-border-radius-large);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 13px;
+  padding: 12px 14px;
+}
+
+/* 表格：比正文小一号，单元格留白收一点 */
+.bn-root .bn-editor .bn-block-content[data-content-type='table'] {
+  font-size: 14px;
+  line-height: 1.6;
 }
 
 .bn-root .bn-editor .bn-block-content[data-content-type='table'] table {
@@ -794,7 +1502,7 @@ body {
 .bn-root .bn-editor .bn-block-content[data-content-type='table'] th,
 .bn-root .bn-editor .bn-block-content[data-content-type='table'] td {
   border: 1px solid var(--semi-color-border);
-  padding: 6px 10px;
+  padding: 8px 12px;
 }
 
 .bn-root .bn-editor .bn-block-content[data-content-type='table'] th {
@@ -810,15 +1518,6 @@ body {
 .bn-root [class*='sideMenu'] button,
 .bn-root .bn-side-menu button {
   color: var(--semi-color-text-2);
-}
-
-.editor-body.mode-edit.body-wysiwyg {
-  display: flex;
-  min-height: 0;
-}
-
-.editor-body.mode-edit.body-wysiwyg .block-editor-scroll {
-  border-right: none;
 }
 
 /* ===== v2 shell: Feishu-style side nav + top bar ===== */
@@ -1087,14 +1786,20 @@ body {
   flex-shrink: 0;
 }
 
+/* 行尾"…"按钮：**始终占位、只切 visibility**。
+   以前是 display:none → hover 时 inline-flex：按钮 24px 高，一出现把行高从
+   ~27.5px 撑到 32px，标题垂直居中也跟着挪 ~2px（用户量的 11↔13px）。
+   滚轮滚动时行从光标底下过，反复进入/离开 hover = 反复长高缩回——就是
+   "滑动会抖、像容器放大"。占位不动，行高恒定。 */
 .tree-node-actions {
-  display: none;
+  display: inline-flex;
+  visibility: hidden;
   flex-shrink: 0;
 }
 
 .tree-node:hover .tree-node-actions,
 .tree-node:focus-within .tree-node-actions {
-  display: inline-flex;
+  visibility: visible;
 }
 
 .tree-more {
@@ -1143,53 +1848,28 @@ body {
   position: relative;
 }
 
-/* Altas 侧栏：贴右侧、可拖拽改宽（收起时只剩右下角圆球 .ai-float-btn） */
-.ai-side {
-  position: relative;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
+/* Altas 悬浮窗：浮在页面之上、可拖可缩（收起时只剩右下角圆球 .ai-float-btn）。
+   为什么不再是"贴右侧侧栏"：Semi 的 AIChat 系列按**整页聊天**设计（官方 demo 是
+   `calc(100vh - 32px)` 的全宽容器），组件里那些 nowrap + min-width:auto 在 460px
+   侧栏里会集中爆发。改成窗口后宽度不再受布局挤占，那一类问题自然消失。
+   取舍：窗口会挡住正文，读的时候要挪开——侧栏的好处是永不遮挡，这是换工作方式。 */
+.ai-window-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 900; /* 低于 Semi 的弹层（1000+）：对话框仍然盖得住它 */
+  pointer-events: none; /* 图层不吃点击，页面照常可点 */
+}
+
+.ai-window {
+  position: absolute; /* 绝对定位 = 收缩包裹，尺寸由 Resizable 决定 */
+  pointer-events: auto;
   background: var(--semi-color-bg-0);
-  border-left: 1px solid var(--semi-color-border);
-  overflow: hidden;
-}
-
-.ai-side.is-dragging {
-  transition: none;
-}
-
-.ai-side-handle {
-  position: absolute;
-  /* 放在侧栏内部靠左的一条：放外面会被 overflow:hidden 裁掉、点不到 */
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 8px;
-  cursor: col-resize;
-  z-index: 2;
-  background: transparent;
-}
-
-.ai-side-handle:hover,
-.ai-side.is-dragging .ai-side-handle {
-  box-shadow: inset -2px 0 0 var(--semi-color-primary);
-}
-
-/* 窄视口：侧栏改为覆盖内容区（VISUAL_SPEC §1.5） */
-@media (max-width: 900px) {
-  .ai-side {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: min(460px, 100%) !important;
-    box-shadow: var(--semi-shadow-elevated);
-  }
-
-  .ai-side-handle {
-    display: none;
-  }
+  border: 1px solid var(--semi-color-border);
+  border-radius: var(--semi-border-radius-large);
+  box-shadow: var(--semi-shadow-elevated);
+  /* 这里**故意不写 overflow:hidden**：Resizable 的把手是 .ai-panel 的兄弟节点，
+     但会伸到窗口边界上——一裁剪，四个角上的把手就点不中了（实测右下角缩放失效）。
+     裁剪下移一层，交给 .ai-panel 自己做（见下）。 */
 }
 
 .dialog-field {
@@ -1415,10 +2095,6 @@ body {
   white-space: nowrap;
 }
 
-.doc-row-status {
-  flex-shrink: 0;
-}
-
 .home-foot {
   max-width: 860px;
   margin-top: 28px;
@@ -1439,16 +2115,28 @@ body {
   margin: 0 auto;
 }
 
-.doc-title-input {
-  font-size: 30px;
+/* 标题输入框：Semi 把 wrapper 和内层 input 都写死 32px 高（.semi-input-wrapper-default
+   / .semi-input-default），32px 字号的标题塞不进去会被裁。两层都得放开高度，
+   选择器带上 Semi 的类以压过同优先级的 -default 规则。 */
+.doc-title-input.semi-input-wrapper {
+  font-size: 32px;
   font-weight: 600;
   line-height: 1.3;
   padding: 0;
+  height: auto;
+}
+
+.doc-title-input .semi-input {
+  font-size: 32px;
+  font-weight: 600;
+  line-height: 1.3;
+  padding: 2px 0;
+  height: auto;
 }
 
 .doc-title-read {
   margin: 0 !important;
-  font-size: 30px;
+  font-size: 32px;
   font-weight: 600;
   line-height: 1.3;
   color: var(--semi-color-text-0);
@@ -1509,96 +2197,6 @@ body {
 }
 
 /* 顶栏 AI 入口（对应飞书母本的「问豆包」，藏在最右侧、不抢戏） */
-/* 阶段芯片（面板与工单详情共用，默认收起） */
-.ai-steps {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  align-items: flex-start;
-}
-
-.ai-step-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
-  padding: 4px 10px;
-  border: 1px solid var(--semi-color-border);
-  border-radius: var(--semi-border-radius-medium);
-  background: var(--semi-color-bg-0);
-  color: var(--semi-color-text-0);
-  font-family: inherit;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.ai-step-chip:disabled {
-  cursor: default;
-}
-
-.ai-step-chip.is-open,
-.ai-step-chip:hover:not(:disabled) {
-  background: var(--semi-color-fill-0);
-}
-
-.ai-step-icon.is-done {
-  color: var(--semi-color-success);
-  display: inline-flex;
-}
-
-.ai-step-icon.is-running {
-  color: var(--semi-color-text-2);
-  display: inline-flex;
-}
-
-.ai-step-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.ai-step-count {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  color: var(--semi-color-text-2);
-  font-size: 12px;
-}
-
-.ai-step-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 6px 0 2px;
-  padding-left: 8px;
-  border-left: 2px solid var(--semi-color-border);
-}
-
-.ai-step-action {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.ai-step-action-summary {
-  font-size: 12px;
-  color: var(--semi-color-text-1);
-}
-
-.ai-step-action-desc {
-  align-self: flex-start;
-  max-width: 100%;
-  padding: 2px 8px;
-  border-radius: var(--semi-border-radius-small);
-  background: var(--semi-color-fill-0);
-  color: var(--semi-color-text-2);
-  font-size: 12px;
-  /* 窄侧栏里一句话就够：超出用省略号，不出横向滚动条 */
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .ai-topbar-btn {
   /* 同理：Semi 的 tertiary borderless 读 --semi-color-text-1 与 --semi-color-tertiary-hover，
      就地换掉，文字与 hover 底色才会真的走 AI 紫。
@@ -1712,6 +2310,15 @@ body {
   font-size: 12px;
 }
 
+/* 输入框右下角的上下文用量环：只对齐，颜色由组件按占用比例选 token */
+.ctx-meter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 6px;
+  cursor: default;
+}
+
 .tb-btn.active {
   color: var(--semi-color-primary);
   background: var(--semi-color-primary-light-default);
@@ -1726,7 +2333,9 @@ body {
   box-shadow: inset 0 0 0 1px var(--semi-color-border);
 }
 
-/* ===== 题记：书页留白（VISUAL_SPEC §3：居中 + 衬线 + 淡底 + 上下细分隔线） ===== */
+/* ===== 题记：书页留白 =====
+   母本(Image: 无尽战争 Wiki)：上下通栏细线 + 居中衬线 + 左上/右下引号 + 右对齐署名，
+   **没有底色、没有边框盒子**。9a3ca2d 曾按「淡底」做成带底色的容器，这里改回留白。 */
 .doc-epigraph,
 .md-preview .doc-epigraph {
   margin: 30px auto;
@@ -1735,10 +2344,10 @@ body {
      259px。钉成 100%（配合 max-width）让两态与阅读态同宽，进出编辑不再跳。 */
   width: 100%;
   max-width: 900px;
-  padding: 20px 30px;
+  padding: 24px 0;
   border-top: 1px solid var(--semi-color-border);
   border-bottom: 1px solid var(--semi-color-border);
-  background: var(--semi-color-primary-light-default);
+  background: transparent;
   text-align: center;
   color: var(--semi-color-text-1);
   font-family:
@@ -1869,12 +2478,14 @@ body {
   text-align: center;
 }
 
-/* 说明块：> 说明：…（浅灰底、斜体，区别于题记） */
-.md-preview blockquote:not(.doc-epigraph) {
-  margin: 16px 0;
-  padding: 10px 16px;
-  border-left: 2px solid var(--semi-color-border);
-  border-radius: 0 6px 6px 0;
+/* 说明块：> 说明：…（左边一条竖线 + 浅灰底、斜体，与编辑器里的引用同款）
+   注意 :not 要排除 .doc-epigraph-body —— 题记正文本身是个 blockquote，
+   类名挂在 figure 上是 .doc-epigraph，写成 :not(.doc-epigraph) 会连它一起染上。 */
+.md-preview blockquote:not(.doc-epigraph-body) {
+  margin: 12px 0;
+  padding: 6px 12px;
+  border-left: 3px solid var(--semi-color-primary);
+  border-radius: var(--semi-border-radius-small);
   background: var(--semi-color-fill-0);
   color: var(--semi-color-text-1);
   font-style: italic;
@@ -1949,4 +2560,79 @@ body {
 
 .md-preview {
   max-width: 756px;
+}
+
+/* GameAtlas 建议建档面板（集合页顶部） */
+.ga-suggest {
+  max-width: 820px;
+  margin: 0 auto 12px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: var(--semi-color-fill-0);
+}
+
+.ga-suggest-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.ga-suggest-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ga-suggest-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ga-suggest-cover {
+  flex: none;
+  width: 64px;
+  height: 40px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--semi-color-fill-1);
+}
+
+.ga-suggest-cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ga-suggest-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ga-suggest-title {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ga-suggest-link {
+  flex: none;
+  font-size: 12px;
+  color: var(--semi-color-link);
+  text-decoration: none;
+}
+
+/* 「关联到 GameAtlas」弹窗里的结果列表 */
+.ga-link-list {
+  max-height: 340px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
 }

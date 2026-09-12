@@ -138,7 +138,6 @@ export default function MarkdownEditor({
             borderless
             className="doc-title-input"
             value={editTitle}
-            inputStyle={{ fontSize: 30, fontWeight: 600, lineHeight: 1.3, padding: '2px 0' }}
             onChange={setEditTitle}
             placeholder="请输入标题"
           />

@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Button,
@@ -13,10 +13,12 @@ import {
   Typography,
 } from '@douyinfe/semi-ui'
 import { IconMore } from '@douyinfe/semi-icons'
-import type { Revision, Work } from '../../types'
-import { deleteWork, getWorkRevisions, restoreWorkRevision } from '../../lib/api'
-import { folderPath } from '../../lib/routes'
+import type { LibraryLink, Relation, Revision, Work } from '../../types'
+import { deleteWork, getWorkRelations, getWorkRevisions, pushGameAtlasWiki, restoreWorkRevision, unlinkGameAtlas } from '../../lib/api'
+import { folderPath, workPath } from '../../lib/routes'
 import { absoluteTime } from '../../lib/tree'
+import { useAppStore } from '../../lib/store'
+import GameAtlasLinkModal from '../library/GameAtlasLinkModal'
 
 const { Text } = Typography
 
@@ -46,14 +48,29 @@ export default function DocActions({
   work,
   onReload,
   onDeleted,
+  libraryLinks,
 }: {
   work: Work
   onReload: () => Promise<void> | void
   onDeleted: () => void
+  libraryLinks?: LibraryLink[]
 }) {
   const nav = useNavigate()
   const [historyOpen, setHistoryOpen] = useState(false)
   const [infoOpen, setInfoOpen] = useState(false)
+  const { nodes } = useAppStore()
+  const [relations, setRelations] = useState<Relation[]>([])
+
+  // 关系只在打开「更多」时拉：它是低频的结构信息，不值得每次进页面都请求。
+  // 存在的意义是**让边看得见**——不然 Altas 建没建、建得对不对，用户在界面上无从核对。
+  useEffect(() => {
+    if (!infoOpen) return
+    let cancelled = false
+    void getWorkRelations(work.id)
+      .then((r) => { if (!cancelled) setRelations(r.relations ?? []) })
+      .catch(() => { if (!cancelled) setRelations([]) })
+    return () => { cancelled = true }
+  }, [infoOpen, work.id])
   const [revisions, setRevisions] = useState<Revision[]>([])
   const [loading, setLoading] = useState(false)
   const [restoring, setRestoring] = useState<string | null>(null)
@@ -92,6 +109,43 @@ export default function DocActions({
     }
   }
 
+  const [pushing, setPushing] = useState(false)
+  const [linkOpen, setLinkOpen] = useState(false)
+  const gaLink = (libraryLinks ?? []).find((l) => l.source === 'gameatlas')
+
+  // 反哺：把已保存的正文（服务端自动带简介）写回 GameAtlas 条目
+  const pushToGameAtlas = async () => {
+    setPushing(true)
+    try {
+      const res = await pushGameAtlasWiki(workId)
+      const intro = res.summary
+        ? `（简介：${res.summary.length > 24 ? `${res.summary.slice(0, 24)}…` : res.summary}）`
+        : ''
+      Toast.success(`已反哺到 GameAtlas${intro}`)
+    } catch (e) {
+      Toast.error(e instanceof Error ? e.message : '反哺失败')
+    } finally {
+      setPushing(false)
+    }
+  }
+
+  const removeGaLink = () => {
+    Modal.confirm({
+      title: '解除 GameAtlas 关联？',
+      content: '解除后这个节点不能再反哺；正文与版本历史不受影响。',
+      okText: '解除',
+      onOk: async () => {
+        try {
+          await unlinkGameAtlas(workId)
+          Toast.success('已解除 GameAtlas 关联')
+          await onReload()
+        } catch (e) {
+          Toast.error(e instanceof Error ? e.message : '解除失败')
+        }
+      },
+    })
+  }
+
   const confirmDelete = () => {
     Modal.confirm({
       title: `删除「${work.title}」？`,
@@ -118,6 +172,16 @@ export default function DocActions({
         render={
           <Dropdown.Menu>
             <Dropdown.Item onClick={() => nav(folderPath(workId))}>打开资料夹</Dropdown.Item>
+            {gaLink ? (
+              <>
+                <Dropdown.Item disabled={pushing} onClick={() => void pushToGameAtlas()}>
+                  {pushing ? '反哺中…' : '反哺到 GameAtlas'}
+                </Dropdown.Item>
+                <Dropdown.Item onClick={removeGaLink}>解除 GameAtlas 关联</Dropdown.Item>
+              </>
+            ) : (
+              <Dropdown.Item onClick={() => setLinkOpen(true)}>关联到 GameAtlas…</Dropdown.Item>
+            )}
             <Dropdown.Item onClick={openHistory}>版本历史</Dropdown.Item>
             <Dropdown.Item
               disabled={revisions.length < 2}
@@ -186,6 +250,16 @@ export default function DocActions({
         )}
       </Modal>
 
+      <GameAtlasLinkModal
+        work={work}
+        visible={linkOpen}
+        onClose={() => setLinkOpen(false)}
+        onLinked={() => {
+          setLinkOpen(false)
+          void onReload()
+        }}
+      />
+
       <Modal
         title="节点信息"
         visible={infoOpen}
@@ -201,7 +275,53 @@ export default function DocActions({
             { key: '状态', value: STATUS_LABEL[work.status] ?? work.status },
             { key: '可见性', value: work.visibility === 'public' ? '公开' : '私有' },
             { key: '版本', value: `v${work.contentVer}` },
-            { key: 'slug', value: work.slug },
+            {
+              key: '关系',
+              value: relations.length ? (
+                <span>
+                  {relations.map((r, i) => {
+                    // 箭头表示方向：本作是 from 就是「本作 → 对方」。
+                    // 词表的语义是"衍生作 → 来源作"，方向反了整句就反了，所以必须标出来。
+                    const outgoing = r.fromId === work.id
+                    const otherId = outgoing ? r.toId : r.fromId
+                    const title = nodes.find((n) => n.id === otherId)?.title ?? otherId.slice(0, 8)
+                    return (
+                      <span key={r.id}>
+                        {i > 0 && <br />}
+                        {outgoing ? '→ ' : '← '}
+                        <a onClick={() => nav(workPath(otherId))}>{title}</a>
+                        <Text type="tertiary" size="small">（{r.type}）</Text>
+                      </span>
+                    )
+                  })}
+                </span>
+              ) : (
+                '—'
+              ),
+            },
+            {
+              key: '库外链',
+              value: (libraryLinks ?? []).length ? (
+                <span>
+                  {(libraryLinks ?? []).map((l, i) => (
+                    <span key={l.id}>
+                      {i > 0 && <br />}
+                      {l.url ? (
+                        <a href={l.url} target="_blank" rel="noreferrer">
+                          {l.source} · {l.titleHint ?? l.externalId.slice(0, 8)}
+                        </a>
+                      ) : (
+                        <span>
+                          {l.source} · {l.titleHint ?? l.externalId.slice(0, 8)}
+                        </span>
+                      )}
+                    </span>
+                  ))}
+                </span>
+              ) : (
+                '—'
+              ),
+            },
             { key: 'ID', value: work.id },
             { key: '创建', value: absoluteTime(work.createdAt) },
             { key: '更新', value: absoluteTime(work.updatedAt) },

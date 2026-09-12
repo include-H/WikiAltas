@@ -80,7 +80,6 @@ export default function DocView() {
       (doc?.links ?? []).map((lid) => ({
         id: lid,
         title: nodes.find((n) => n.id === lid)?.title ?? lid.slice(0, 8),
-        slug: nodes.find((n) => n.id === lid)?.slug,
       })),
     [doc, nodes],
   )
@@ -172,7 +171,7 @@ export default function DocView() {
                     size="small"
                     theme="borderless"
                     type="tertiary"
-                    onClick={() => nav(workPath(l.id, l.slug))}
+                    onClick={() => nav(workPath(l.id))}
                   >
                     {l.title}
                   </Button>

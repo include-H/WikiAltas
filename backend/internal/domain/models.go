@@ -74,6 +74,22 @@ var ValidRelationTypes = map[RelationType]bool{
 	RelationSameSeries:   true,
 }
 
+// DirectionalRelationTypes 是**有方向、合起来必须构成 DAG** 的那几种。
+//
+// 它们描述的是"谁从谁那里来"（改编自、续作于、衍生自…），所以 A→B 与 B→A
+// 同时存在是自相矛盾的：读取侧会看到「A 是 B 的续作」和「B 是 A 的续作」两句话，
+// 无从判断。建边时据此查环。
+//
+// `same_series` 与 `references` **天然是互相的**，不参与查环——它们本来就是
+// 对称关系，两边各存一条是正常的。
+var DirectionalRelationTypes = map[RelationType]bool{
+	RelationAdaptationOf: true,
+	RelationSequelTo:     true,
+	RelationSpinOffOf:    true,
+	RelationRemakeOf:     true,
+	RelationExpansionOf:  true,
+}
+
 type LibrarySource string
 
 const (
@@ -111,7 +127,6 @@ type Work struct {
 	Kind       WorkKind   `json:"kind"`
 	Medium     *Medium    `json:"medium"`
 	Title      string     `json:"title"`
-	Slug       string     `json:"slug"`
 	Aliases    []string   `json:"aliases"`
 	ContentMd  *string    `json:"contentMd"`
 	ContentVer int64      `json:"contentVer"`
@@ -130,7 +145,6 @@ type WorkSummary struct {
 	Kind           WorkKind   `json:"kind"`
 	Medium         *Medium    `json:"medium"`
 	Title          string     `json:"title"`
-	Slug           string     `json:"slug"`
 	Status         WorkStatus `json:"status"`
 	Visibility     Visibility `json:"visibility"`
 	HasContent     bool       `json:"hasContent"`
@@ -144,7 +158,6 @@ type Doc struct {
 	ID         string   `json:"id"`
 	FolderOf   string   `json:"folderOf"`
 	Title      string   `json:"title"`
-	Slug       string   `json:"slug"`
 	ContentMd  string   `json:"contentMd"`
 	ContentVer int64    `json:"contentVer"`
 	Links      []string `json:"links"`
@@ -185,13 +198,6 @@ type LibraryLink struct {
 	CreatedAt  string        `json:"createdAt"`
 }
 
-// RunTask is one step in a run plan.
-type RunTask struct {
-	ID     string `json:"id"`
-	Title  string `json:"title"`
-	Status string `json:"status"` // pending | in_progress | completed | failed
-}
-
 // Run is a librarian work order.
 type Run struct {
 	ID         string         `json:"id"`
@@ -199,7 +205,6 @@ type Run struct {
 	Intent     RunIntent      `json:"intent"`
 	Goal       string         `json:"goal"`
 	Status     RunStatus      `json:"status"`
-	Plan       []RunTask      `json:"plan"`
 	Checkpoint map[string]any `json:"checkpoint,omitempty"`
 	ToolCache  map[string]any `json:"toolCache,omitempty"`
 	Result     map[string]any `json:"result"`
@@ -224,13 +229,33 @@ type RunEvent struct {
 	CreatedAt string         `json:"createdAt"`
 }
 
+// Session 是一段连续对话。会话 id 就是 runs.workspace；target 是它归属的页面
+// （work:<id> / doc:<id> / home / batch:<id>），同一页面可以有多段会话。
+type Session struct {
+	ID     string `json:"id"`
+	Target string `json:"target"`
+	Title  string `json:"title"`
+	// LastGoal 是该会话最近一句用户消息。列表的副标题用它——
+	// 标题只在建会话时定一次，之后问"这场对话最近在聊什么"要靠它。
+	LastGoal  string `json:"lastGoal"`
+	RunCount  int64  `json:"runCount"`
+	Status    string `json:"status"` // 最近一次执行的状态；有 running 的优先
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
+}
+
+// CreateSessionBody is POST /api/sessions.
+type CreateSessionBody struct {
+	Target string `json:"target"`
+	Title  string `json:"title"`
+}
+
 // SearchHit is one FTS result.
 type SearchHit struct {
 	ID      string `json:"id"`
 	Kind    string `json:"kind"` // work | doc
 	Title   string `json:"title"`
 	Snippet string `json:"snippet"`
-	Slug    string `json:"slug"`
 }
 
 // Settings is the persisted app configuration.
@@ -241,6 +266,14 @@ type Settings struct {
 		APIKeyConfigured bool     `json:"apiKeyConfigured"`
 		Temperature      *float64 `json:"temperature,omitempty"`
 		MaxTokens        *int     `json:"maxTokens,omitempty"`
+		// ReasoningEffort 思考等级：off | low | medium | high | xhigh | max（空=走默认 medium）
+		ReasoningEffort string `json:"reasoningEffort,omitempty"`
+		// Protocol 协议标识。留空 = 默认（responses）。这是"以后要加新协议"的位置：
+		// 加协议只动 llm.NewClient 的分派，上层与前端不感知。
+		Protocol string `json:"protocol,omitempty"`
+		// ContextWindow 当前模型的上下文窗口（token）。只用于界面显示用量占比
+		// （面板右下角那圈）；0 表示未知，用 DefaultContextWindow。
+		ContextWindow int `json:"contextWindow,omitempty"`
 	} `json:"llm"`
 	Library struct {
 		EmbyURL         *string `json:"embyUrl,omitempty"`
@@ -262,6 +295,10 @@ type Settings struct {
 	// Search 联网检索（Exa）。key 单独存 settings 表，接口只回"是否已配置"。
 	Search struct {
 		ExaAPIKeyConfigured bool `json:"exaApiKeyConfigured"`
+		// ProxyURL 出外网的 HTTP 代理（如 http://192.168.1.253:7890）。
+		// 只给 fetch_url 用：直连超时时模型会带 useProxy 重试同一页。
+		// Exa 检索走它自己的通道，不受这里影响。
+		ProxyURL string `json:"proxyUrl,omitempty"`
 	} `json:"search"`
 	// Admin 简易用户系统（单管理员）。密码只存哈希，接口只回是否已设置。
 	Admin struct {
@@ -296,7 +333,6 @@ type CreateWorkBody struct {
 	Kind     WorkKind `json:"kind"`
 	Medium   *Medium  `json:"medium"`
 	Title    string   `json:"title"`
-	Slug     *string  `json:"slug"`
 	// Visibility 省略时用设置页的"新节点默认可见性"
 	Visibility *Visibility `json:"visibility"`
 }
@@ -349,6 +385,9 @@ type CreateRunBody struct {
 	// 面板刷新后按它召回同一段对话；留空按 default 处理。列已存在于 runs 表。
 	Workspace string      `json:"workspace"`
 	Context   *RunContext `json:"context"`
+	// ReasoningEffort 思考等级覆盖（off|low|medium|high|xhigh|max）：聊天框里选的档位，
+	// 留空用设置页的值。只影响本条工单。
+	ReasoningEffort string `json:"reasoningEffort"`
 }
 
 // RunContext 是一次工单要绑定的上下文（作品/资料/父节点/介质/章节）。

@@ -11,7 +11,7 @@ function isEditing(): boolean {
  * Altas 写正文时，前端要能看见"写到哪儿了"。
  *
  * staging 期间按间隔静默重取正文（不闪 loading、不覆盖用户正在打的字）；
- * 提交（content.committed）之后由调用方自己的逻辑做最终刷新。
+ * 提交（wikiatlas.content.committed）之后由调用方自己的逻辑做最终刷新。
  */
 export function useLiveRefresh(
   active: boolean,

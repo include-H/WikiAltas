@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"wikiatlas/backend/internal/domain"
 	"wikiatlas/backend/internal/skill"
@@ -238,28 +239,18 @@ func TestPatchSectionOnDoc(t *testing.T) {
 	}
 }
 
-func TestNarrativeAndPlan(t *testing.T) {
+func TestNarrative(t *testing.T) {
 	d, _ := newDeps(t)
 	var lines []string
-	var plans []string
 	d.Emit = func(typ string, payload map[string]any) {
 		if typ == "narrative" {
 			lines = append(lines, payload["text"].(string))
 		}
-		if typ == "plan.updated" {
-			plans = append(plans, "plan")
-		}
 	}
 	reg := tools.NewLibrarianRegistry(d)
 	call(t, reg, "narrative", map[string]any{"text": "正在检索"})
-	call(t, reg, "update_plan", map[string]any{
-		"tasks": []map[string]any{{"id": "t1", "title": "a", "status": "completed"}},
-	})
 	if len(lines) != 1 || lines[0] != "正在检索" {
 		t.Fatalf("lines=%v", lines)
-	}
-	if len(plans) != 1 {
-		t.Fatalf("plans=%v", plans)
 	}
 }
 
@@ -304,6 +295,131 @@ func contains(s, sub string) bool {
 	return strings.Contains(s, sub)
 }
 
+// --- edit：字面串替换 ---
+
+func TestEditLiteralSemantics(t *testing.T) {
+	md := "甲。乙。丙。"
+	if out, n, err := tools.EditLiteral(md, "乙", "乙二", false); err != nil || out != "甲。乙二。丙。" || n != 1 {
+		t.Fatalf("唯一命中替换失败: out=%q n=%d err=%v", out, n, err)
+	}
+	// 未命中：原样返回 + 报错（绝不改动正文）
+	if out, n, err := tools.EditLiteral(md, "丁", "戊", false); err == nil || out != md || n != 0 {
+		t.Fatalf("未命中应拒绝并保持原样: out=%q n=%d err=%v", out, n, err)
+	}
+	// 多处命中且未开 replaceAll：报错，且错误里带行号供模型补上下文
+	dup := "甲\n乙\n甲\n"
+	if _, n, err := tools.EditLiteral(dup, "甲", "丙", false); err == nil || n != 2 {
+		t.Fatalf("多处命中应拒绝: n=%d err=%v", n, err)
+	} else if !strings.Contains(err.Error(), "第 1、3 行") {
+		t.Fatalf("错误里应带命中行号: %v", err)
+	}
+	// replaceAll：统一术语用
+	if out, n, err := tools.EditLiteral(dup, "甲", "丙", true); err != nil || n != 2 || strings.Contains(out, "甲") {
+		t.Fatalf("replaceAll 失败: out=%q n=%d err=%v", out, n, err)
+	}
+	// 空 oldString 必须拒绝：否则等于整篇重写
+	if _, _, err := tools.EditLiteral(md, "", "x", false); err == nil {
+		t.Fatal("空 oldString 应被拒绝")
+	}
+}
+
+// 回归：题记（:::epigraph）在第一个 ## 之前，patch_section 够不着，
+// 改题记曾经只能 write_content 整篇重写（真实事故：13054 字全文重打一遍）。
+// edit 按字面串匹配，与 markdown 结构无关，必须能直接改到。
+func TestEditReachesEpigraphAboveFirstHeading(t *testing.T) {
+	d, st := newDeps(t)
+	reg := tools.NewLibrarianRegistry(d)
+	w, err := st.CreateWork(domain.CreateWorkBody{Kind: domain.WorkKindWork, Title: "题记测试"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := "# 未来黎明（小说）Wiki\n\n> 说明：待核实项已标出。\n\n:::epigraph\n旧的场景式题记。\n:::\n\n"
+	if _, err := st.PutWorkContent(w.ID, domain.PutContentBody{
+		ContentMd: head + "## 1. 作品概览\n\n正文一。\n\n## 2. 基础信息速览\n\n正文二。\n",
+		Author:    domain.AuthorHuman,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 先钉住前提：patch_section 到不了题记
+	blocked := call(t, reg, "patch_section", map[string]any{
+		"targetId": w.ID, "heading": ":::epigraph", "newMarkdown": "新的引用式题记。",
+	})
+	if blocked["ok"] != false {
+		t.Fatalf("patch_section 本不该够到题记: %v", blocked)
+	}
+
+	res := call(t, reg, "edit", map[string]any{
+		"targetId":  w.ID,
+		"oldString": ":::epigraph\n旧的场景式题记。\n:::",
+		"newString": ":::epigraph\n新的引用式题记。\n——某角色《某作品》\n:::",
+		"summary":   "题记改为引用式",
+	})
+	if res["ok"] != true {
+		t.Fatalf("edit: %v", res)
+	}
+	wd, _ := st.GetWork(w.ID)
+	got := *wd.ContentMd
+	if !contains(got, "新的引用式题记") || contains(got, "旧的场景式题记") {
+		t.Fatalf("题记没替换:\n%s", got)
+	}
+	if !contains(got, "> 说明：待核实项已标出。") {
+		t.Fatalf("说明行被动了:\n%s", got)
+	}
+	if !contains(got, "## 1. 作品概览\n\n正文一。") || !contains(got, "## 2. 基础信息速览\n\n正文二。") {
+		t.Fatalf("别的章节被动了:\n%s", got)
+	}
+	// 摘要进版本历史，用户在版本列表里看得见这次改的是什么
+	revs, err := st.ListRevisions("work", w.ID, 5, false)
+	if err != nil || len(revs) == 0 {
+		t.Fatalf("revisions: %v %v", revs, err)
+	}
+	if !contains(revs[0].Summary, "题记改为引用式") {
+		t.Fatalf("revision summary=%q", revs[0].Summary)
+	}
+}
+
+func TestEditRefusalsAndDocTarget(t *testing.T) {
+	d, st := newDeps(t)
+	reg := tools.NewLibrarianRegistry(d)
+	series, _ := st.CreateWork(domain.CreateWorkBody{Kind: domain.WorkKindSeries, Title: "系列"})
+	doc, err := st.CreateDoc(series.ID, domain.CreateDocBody{Title: "资料稿"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PutDocContent(doc.ID, domain.PutContentBody{
+		ContentMd: "# 资料稿\n\n## 一、起点\n\n旧句子。\n",
+		Author:    domain.AuthorHuman,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 空 oldString 拒绝
+	if r := call(t, reg, "edit", map[string]any{"targetType": "doc", "targetId": doc.ID, "oldString": "", "newString": "x"}); r["ok"] != false {
+		t.Fatalf("空 oldString 应被拒绝: %v", r)
+	}
+	// old == new 拒绝（保证是空操作）
+	if r := call(t, reg, "edit", map[string]any{"targetType": "doc", "targetId": doc.ID, "oldString": "旧句子", "newString": "旧句子"}); r["ok"] != false {
+		t.Fatalf("原样替换应被拒绝: %v", r)
+	}
+	// 找不到也要拒绝，并且不能改动正文
+	if r := call(t, reg, "edit", map[string]any{"targetType": "doc", "targetId": doc.ID, "oldString": "不存在的句子", "newString": "x"}); r["ok"] != false {
+		t.Fatalf("未命中应被拒绝: %v", r)
+	}
+	got, _ := st.GetDoc(doc.ID)
+	if !contains(got.ContentMd, "旧句子") {
+		t.Fatalf("被拒绝的 edit 改了正文:\n%s", got.ContentMd)
+	}
+	// 资料正文同样改得动
+	if r := call(t, reg, "edit", map[string]any{"targetType": "doc", "targetId": doc.ID, "oldString": "旧句子。", "newString": "新句子。"}); r["ok"] != true {
+		t.Fatalf("doc edit: %v", r)
+	}
+	got, _ = st.GetDoc(doc.ID)
+	if !contains(got.ContentMd, "新句子。") || contains(got.ContentMd, "旧句子。") {
+		t.Fatalf("doc 内容=%s", got.ContentMd)
+	}
+}
+
 // 模型常把 "## 1. 概览" 一起写进 newMarkdown：工具必须剥掉它，
 // 否则正文里会出现重复标题（真实观测中同一章标题重复了 3 次）。
 func TestReplaceSectionStripsDuplicatedHeading(t *testing.T) {
@@ -320,5 +436,67 @@ func TestReplaceSectionStripsDuplicatedHeading(t *testing.T) {
 	}
 	if !strings.Contains(out, "设定内容") {
 		t.Fatalf("下一章丢失:\n%s", out)
+	}
+}
+
+// read_skill 的上限按 rune 算：按字节切会把中文劈成半个字符，
+// json.Marshal 再把它换成 U+FFFD，模型看到的尾巴就是一堆乱码。
+func TestReadSkillTruncatesOnRuneBoundary(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "big.md"), []byte(strings.Repeat("中", 30000)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d, _ := newDeps(t)
+	d.Skill = skill.NewLoader(root)
+	reg := tools.NewLibrarianRegistry(d)
+
+	got := call(t, reg, "read_skill", map[string]any{"path": "big.md"})
+	content, _ := got["content"].(string)
+	if !utf8.ValidString(content) || strings.ContainsRune(content, utf8.RuneError) {
+		t.Fatal("截断劈坏了多字节字符")
+	}
+	if !contains(content, "（截断）") {
+		t.Fatalf("超限应标注截断: 长度 %d", len([]rune(content)))
+	}
+}
+
+// todo 契约的三条硬校验（照 dsh：content 非空且唯一、至多一条 in_progress）。
+// 静默接受等于把问题推给用户——清单是用户直接读的东西。
+func TestTodoWriteValidation(t *testing.T) {
+	d, _ := newDeps(t)
+	reg := tools.NewLibrarianRegistry(d)
+
+	ok := call(t, reg, "todo_write", map[string]any{"tasks": []map[string]any{
+		{"id": "t1", "content": "核实上映年份", "activeForm": "正在核实上映年份", "status": "in_progress"},
+		{"id": "t2", "content": "写第一章", "activeForm": "正在写第一章", "status": "pending"},
+	}})
+	if ok["ok"] != true || ok["inProgress"].(float64) != 1 {
+		t.Fatalf("正常清单应通过：%v", ok)
+	}
+
+	bad := []struct {
+		name  string
+		tasks []map[string]any
+		want  string
+	}{
+		{"空任务名", []map[string]any{{"content": "  ", "status": "pending"}}, "没有名字"},
+		{"重名", []map[string]any{
+			{"content": "写第一章", "status": "pending"},
+			{"content": "写第一章", "status": "pending"},
+		}, "任务名重复"},
+		{"两条 in_progress", []map[string]any{
+			{"content": "甲", "status": "in_progress"},
+			{"content": "乙", "status": "in_progress"},
+		}, "只能有一个 in_progress"},
+	}
+	for _, c := range bad {
+		res := call(t, reg, "todo_write", map[string]any{"tasks": c.tasks})
+		if res["ok"] != false {
+			t.Fatalf("%s 应被拒绝：%v", c.name, res)
+		}
+		msg, _ := res["message"].(string)
+		if !contains(msg, c.want) {
+			t.Fatalf("%s 的拒绝理由应含 %q，实际 %q", c.name, c.want, msg)
+		}
 	}
 }

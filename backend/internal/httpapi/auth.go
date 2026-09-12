@@ -14,7 +14,8 @@ import (
 
 // 简易用户系统（DESIGN_V2 §3.6）：
 //   · 单管理员账号，密码哈希存 settings 表
-//   · 登录后发 HttpOnly Cookie，值是 HMAC 签名的 "用户名|过期时间戳"
+//   · 登录后发 HttpOnly Cookie，值是 HMAC 签名的 "主体|过期时间戳|密码指纹"
+//     （主体固定是 admin，**不含显示名**——显示名进 Cookie 会被剥掉非法字节）
 //   · 访客（未登录）默认拒绝，只有白名单里的只读接口可访问，且只返回公开内容
 
 const (
@@ -90,37 +91,40 @@ func clearLoginFails(key string) {
 	delete(loginGuards.m, key)
 }
 
-func (s *Server) signSession(username string, exp int64) string {
+// sessionPrincipal 是会话里的**账号主体**，不是显示名。
+//
+// token 会进 Cookie，而 Cookie 值只允许可见 ASCII：把用户填的显示名塞进去
+// （可能是「不知名网友Hao」），Go 的 SetCookie 会悄悄剥掉非法字节，于是签名
+// 对不上、登录态当场作废（真实观测：改名后 /api/auth/me 一直是 authed:false）。
+// 显示名本来就是"仅显示用"，不该进凭据——这里固定成 admin，
+// 要用显示名的地方现从设置里取。
+const sessionPrincipal = "admin"
+
+func (s *Server) signSession(exp int64) string {
 	// 指纹 = 当前访问密码哈希的摘要：改密码 → 旧 Cookie 全部失效
-	payload := username + "|" + strconv.FormatInt(exp, 10) + "|" + s.store.SessionFingerprint()
+	payload := sessionPrincipal + "|" + strconv.FormatInt(exp, 10) + "|" + s.store.SessionFingerprint()
 	mac := hmac.New(sha256.New, []byte(s.store.SessionSecret()))
 	mac.Write([]byte(payload))
 	return payload + "|" + hex.EncodeToString(mac.Sum(nil))
 }
 
-func (s *Server) verifySession(token string) (string, bool) {
+// verifySession 校验签名、有效期与密码指纹。与**显示名无关**：
+// 改管理员标识不该把已登录的人踢出去。
+func (s *Server) verifySession(token string) bool {
 	parts := strings.Split(token, "|")
-	if len(parts) != 4 {
-		return "", false
+	if len(parts) != 4 || parts[0] != sessionPrincipal {
+		return false
 	}
-	username, expStr, fp, sig := parts[0], parts[1], parts[2], parts[3]
-	exp, err := strconv.ParseInt(expStr, 10, 64)
+	exp, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil || time.Now().Unix() > exp {
-		return "", false
+		return false
 	}
-	if fp != s.store.SessionFingerprint() {
-		return "", false
+	if parts[2] != s.store.SessionFingerprint() {
+		return false
 	}
 	mac := hmac.New(sha256.New, []byte(s.store.SessionSecret()))
-	mac.Write([]byte(username + "|" + expStr + "|" + fp))
-	want := hex.EncodeToString(mac.Sum(nil))
-	if !hmac.Equal([]byte(want), []byte(sig)) {
-		return "", false
-	}
-	if username != s.store.AdminUsername() {
-		return "", false
-	}
-	return username, true
+	mac.Write([]byte(parts[0] + "|" + parts[1] + "|" + parts[2]))
+	return hmac.Equal([]byte(hex.EncodeToString(mac.Sum(nil))), []byte(parts[3]))
 }
 
 // isAuthed 当前请求是否带着有效的管理员会话。
@@ -129,8 +133,7 @@ func (s *Server) isAuthed(r *http.Request) bool {
 	if err != nil || c.Value == "" {
 		return false
 	}
-	_, ok := s.verifySession(c.Value)
-	return ok
+	return s.verifySession(c.Value)
 }
 
 // guestAllowed 访客（未登录）唯一可用的接口：只读浏览公开内容。
@@ -221,7 +224,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	exp := time.Now().Add(sessionTTL).Unix()
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
-		Value:    s.signSession(username, exp),
+		Value:    s.signSession(exp),
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
@@ -240,9 +243,14 @@ func (s *Server) handleLogout(w http.ResponseWriter, _ *http.Request) {
 
 // handleMe 前端启动时问一次：我是不是登录态、有没有设密码。
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
-	username, ok := "", false
+	// 会话只证明"是管理员"，显示名现从设置里取——两者本来就不该绑在一起
+	ok := false
 	if c, err := r.Cookie(sessionCookieName); err == nil {
-		username, ok = s.verifySession(c.Value)
+		ok = s.verifySession(c.Value)
+	}
+	username := ""
+	if ok {
+		username = s.store.AdminUsername()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"authed":                  ok,

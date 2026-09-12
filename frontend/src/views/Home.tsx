@@ -7,7 +7,6 @@ import {
   Modal,
   Select,
   Spin,
-  Tag,
   Toast,
   Tooltip,
   Typography,
@@ -17,7 +16,7 @@ import type { Run, WorkSummary } from '../types'
 import { createBatchWiki, listRuns } from '../lib/api'
 import { useAppStore } from '../lib/store'
 import { workPath } from '../lib/routes'
-import { STATUS_META, absoluteTime, ancestorPath, relativeTime } from '../lib/tree'
+import { absoluteTime, ancestorPath, relativeTime } from '../lib/tree'
 import { CreateNodeModal } from '../components/shell/WorkDialogs'
 import type { CreateTarget } from '../components/shell/WorkDialogs'
 
@@ -34,6 +33,11 @@ export default function Home() {
   const [batchStarting, setBatchStarting] = useState(false)
 
   useEffect(() => {
+    // 工单是私有数据：访客态不该去拉——拉了必然 401，白跑一次请求还留一条 console 错误。
+    if (!me.authed) {
+      setRuns([])
+      return
+    }
     let cancelled = false
     void (async () => {
       try {
@@ -46,7 +50,7 @@ export default function Home() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [me.authed])
 
   const pinned = useMemo(
     () => nodes.filter((n) => pinnedIds.includes(n.id)),
@@ -80,28 +84,22 @@ export default function Home() {
     }
   }
 
-  const row = (n: WorkSummary, pinnedRow = false, showStatus = true) => {
+  const row = (n: WorkSummary, pinnedRow = false) => {
     const path = ancestorPath(nodes, n.id)
       .slice(0, -1)
       .map((p) => p.title)
       .join(' / ')
-    const status = STATUS_META[n.status]
     return (
       <List.Item
         key={n.id}
         className="doc-row"
-        onClick={() => nav(workPath(n.id, n.slug))}
+        onClick={() => nav(workPath(n.id))}
       >
         {pinnedRow ? <IconStar size="small" className="doc-row-pin" /> : <IconFile className="doc-row-icon" />}
         <div className="doc-row-main">
           <span className="doc-row-title">{n.title}</span>
           {path && <span className="doc-row-path">{path}</span>}
         </div>
-        {showStatus && n.status !== 'stub' && (
-          <Tag size="small" color={status.color} className="doc-row-status">
-            {status.label}
-          </Tag>
-        )}
         <Tooltip content={absoluteTime(n.updatedAt)} position="left">
           <span className="doc-row-time">{relativeTime(n.updatedAt)}</span>
         </Tooltip>
@@ -202,7 +200,7 @@ export default function Home() {
             dataSource={stubs}
             split={false}
             className="doc-list"
-            renderItem={(n) => row(n, false, false)}
+            renderItem={(n) => row(n, false)}
           />
         </section>
       )}

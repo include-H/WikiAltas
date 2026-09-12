@@ -27,9 +27,6 @@ func NewLoader(root string) *Loader {
 	return &Loader{root: root}
 }
 
-// Root returns the resolved skill root.
-func (l *Loader) Root() string { return l.root }
-
 // Exists reports whether the skill root looks valid.
 func (l *Loader) Exists() bool {
 	if l == nil || l.root == "" {
@@ -133,6 +130,29 @@ func (l *Loader) FilesForIntent(intent domain.RunIntent, medium domain.Medium) (
 	default:
 		return l.FilesForCreateWiki(medium)
 	}
+}
+
+// FilesForIntentKind 在 FilesForIntent 之上按节点层级补规则：目标是 series/universe 时，
+// 连同系列主文/合集写法（readme.md）一起注入。否则模型写「把这一系列各代合写一篇」时，
+// 只按载体条目的 9 章骨架走，看不到合集该改哪里——合集规则就形同不存在。
+func (l *Loader) FilesForIntentKind(intent domain.RunIntent, medium domain.Medium, kind domain.WorkKind) ([]File, error) {
+	files, err := l.FilesForIntent(intent, medium)
+	if err != nil || len(files) == 0 {
+		return files, err
+	}
+	if kind != domain.WorkKindSeries && kind != domain.WorkKindUniverse {
+		return files, nil
+	}
+	for _, f := range files {
+		if f.Name == "readme.md" {
+			return files, nil
+		}
+	}
+	extra, err := l.load([]string{"readme.md"})
+	if err != nil {
+		return files, nil // readme 缺失不致命，主 bundle 照常
+	}
+	return append(files, extra...), nil
 }
 
 // Names returns just the file names of the loaded bundle.

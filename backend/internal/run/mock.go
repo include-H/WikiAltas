@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -14,6 +15,10 @@ import (
 
 // executeMock is the no-LLM path. It still reads skill files and emits a
 // realistic Feishu/MiMo-style event sequence so the frontend can be exercised.
+//
+// 它走的是**和真模型完全一样**的发射器：每个假工具调用也开一个 function_call 项、
+// 每个假播报也开一个 message 项。所以 mock 能验的就是前端真实的渲染路径，
+// 不存在"演示一套、真跑另一套"。
 func (m *Manager) executeMock(ctx context.Context, runID string, intent domain.RunIntent, goal string, ctxMap map[string]any, fromStep int) {
 	workID, _ := ctxMap["workId"].(string)
 	docID, _ := ctxMap["docId"].(string)
@@ -25,6 +30,13 @@ func (m *Manager) executeMock(ctx context.Context, runID string, intent domain.R
 		}
 	}
 
+	em := m.newRespEmitter(runID, "mock", fromStep > 0)
+	em.created(fromStep == 0)
+	em.emit(EvWAMeta, map[string]any{
+		"runId": runID, "sessionId": ctxMap["session"], "goal": goal,
+		"intent": string(intent), "model": "mock",
+	})
+
 	loader := m.skillLoader()
 	var skillNames []string
 	var skillOK bool
@@ -35,66 +47,45 @@ func (m *Manager) executeMock(ctx context.Context, runID string, intent domain.R
 		}
 	}
 
+	// mockTool 发一次完整的假工具调用：参数 → 结果，一路走规范事件。
+	seq := 0
+	mockTool := func(name, args, outputSummary string) {
+		seq++
+		callID := fmt.Sprintf("call_mock_%d", seq)
+		em.callArgsDone(callID, name, args)
+		em.toolResult(callID, name, args, true, map[string]any{
+			"outputSummary": outputSummary, "ok": true, "durationMs": 20,
+		})
+	}
+
 	steps := []struct {
 		title string
 		fn    func() error
 	}{
 		{"理解目标", func() error {
-			m.emit(runID, "narrative", map[string]any{"text": fmt.Sprintf("收到工单：%s", goal)})
-			m.emit(runID, "narrative", map[string]any{"text": "我先读 skill 和站内已有条目，再联网核实关键事实。"})
-			m.emit(runID, "tool.started", map[string]any{
-				"name": "read_skill", "inputSummary": "SKILL.md + core.md + media",
-			})
-			time.Sleep(20 * time.Millisecond)
+			em.message("我先读 skill 和站内已有条目，再联网核实关键事实。")
 			if skillOK {
-				m.emit(runID, "tool.done", map[string]any{
-					"name":          "read_skill",
-					"outputSummary": "已加载 " + strings.Join(skillNames, " + "),
-					"durationMs":    20,
-				})
+				mockTool("read_skill", `{"path":"SKILL.md"}`, "已加载 "+strings.Join(skillNames, " + "))
 			} else {
-				m.emit(runID, "tool.done", map[string]any{
-					"name":          "read_skill",
-					"outputSummary": "skill 未配置，按通用边界继续",
-					"durationMs":    20,
-				})
+				mockTool("read_skill", `{"path":"SKILL.md"}`, "skill 未配置，按通用边界继续")
 			}
 			return nil
 		}},
 		{"检索资料", func() error {
-			m.emit(runID, "tool.started", map[string]any{"name": "search_works", "inputSummary": "q=" + truncate(goal, 40)})
-			time.Sleep(20 * time.Millisecond)
 			hits, _ := m.store.Search(goal, "", 5)
-			m.emit(runID, "tool.done", map[string]any{
-				"name": "search_works", "outputSummary": fmt.Sprintf("命中 %d 条", len(hits)), "durationMs": 20,
-			})
-			m.emit(runID, "tool.started", map[string]any{"name": "search_web", "inputSummary": "q=" + truncate(goal, 40)})
-			time.Sleep(20 * time.Millisecond)
-			m.emit(runID, "tool.done", map[string]any{
-				"name":          "search_web",
-				"outputSummary": "no web：未配置 Exa key",
-				"durationMs":    20,
-			})
-			m.emit(runID, "narrative", map[string]any{"text": "站内检索完毕；联网检索不可用，事实项将标「待核实」。"})
+			mockTool("search_works", `{"q":`+mustJSONString(truncate(goal, 40))+`}`,
+				fmt.Sprintf("命中 %d 条", len(hits)))
+			mockTool("search_web", `{"q":`+mustJSONString(truncate(goal, 40))+`}`, "no web：未配置 Exa key")
+			em.message("站内检索完毕；联网检索不可用，事实项将标「待核实」。")
 			return nil
 		}},
 		{"产出内容", func() error {
-			m.emit(runID, "plan.updated", map[string]any{
-				"tasks": []map[string]any{
-					{"id": "t1", "title": "理解目标", "status": "completed"},
-					{"id": "t2", "title": "检索资料", "status": "completed"},
-					{"id": "t3", "title": "产出内容", "status": "in_progress"},
-					{"id": "t4", "title": "写入并完成", "status": "pending"},
-				},
-			})
-			m.emit(runID, "narrative", map[string]any{"text": "资料核实完毕。现在按骨架写入条目（无模型演示内容）。"})
+			em.message("资料核实完毕。现在按骨架写入条目（无模型演示内容）。")
 			return nil
 		}},
 		{"写入并完成", func() error {
 			if workID == "" && docID == "" {
-				m.emit(runID, "narrative", map[string]any{
-					"text": "（未绑定作品/资料，跳过写入。配置 WIKIATLAS_LLM_* 后可调用真实模型。）",
-				})
+				em.notice("（未绑定作品/资料，跳过写入。配置 WIKIATLAS_LLM_* 后可调用真实模型。）", NoticeInfo)
 				return nil
 			}
 			md := mockMarkdown(goal, intent, medium, skillNames)
@@ -106,11 +97,11 @@ func (m *Manager) executeMock(ctx context.Context, runID string, intent domain.R
 			if targetID == "" {
 				targetType, targetID = "doc", docID
 			}
-			m.emit(runID, "tool.started", map[string]any{
-				"name":         "write_content",
-				"inputSummary": fmt.Sprintf("target=%s:%s len=%d", targetType, targetID, len([]rune(md))),
-			})
-			m.emit(runID, "content.staging", map[string]any{
+			seq++
+			callID := fmt.Sprintf("call_mock_%d", seq)
+			em.callArgsDone(callID, "write_content",
+				fmt.Sprintf(`{"target":"%s:%s","len":%d}`, targetType, targetID, len([]rune(md))))
+			em.emit(EvWAStage, map[string]any{
 				"targetType": targetType,
 				"targetId":   targetID,
 				"previewMd":  preview,
@@ -146,7 +137,7 @@ func (m *Manager) executeMock(ctx context.Context, runID string, intent domain.R
 					Summary:   &summary,
 				})
 				if err == nil {
-					m.emit(runID, "content.committed", map[string]any{
+					em.emit(EvWACommit, map[string]any{
 						"targetType": targetType,
 						"targetId":   targetID,
 						"version":    res.ContentVer,
@@ -159,15 +150,15 @@ func (m *Manager) executeMock(ctx context.Context, runID string, intent domain.R
 			if targetType == "doc" {
 				// committed event for docs
 				if d, e := m.store.GetDoc(targetID); e == nil {
-					m.emit(runID, "content.committed", map[string]any{
+					em.emit(EvWACommit, map[string]any{
 						"targetType": "doc",
 						"targetId":   targetID,
 						"version":    d.ContentVer,
 					})
 				}
 			}
-			m.emit(runID, "tool.done", map[string]any{
-				"name": "write_content", "outputSummary": "已提交 revision", "durationMs": 30,
+			em.toolResult(callID, "write_content", "", true, map[string]any{
+				"outputSummary": "已提交 revision", "ok": true, "durationMs": 30,
 			})
 
 			// quality gate
@@ -177,61 +168,35 @@ func (m *Manager) executeMock(ctx context.Context, runID string, intent domain.R
 					st := domain.WorkStatusReady
 					_, _ = m.store.PatchWork(targetID, domain.PatchWorkBody{Status: &st})
 				}
-				m.emit(runID, "tree.updated", map[string]any{
+				em.emit(EvWATree, map[string]any{
 					"works": []map[string]any{{"id": targetID, "status": "ready"}},
 				})
-				m.emit(runID, "narrative", map[string]any{"text": "质量自检通过，已标记 ready。"})
+				em.notice("质量自检通过，已标记 ready。", NoticeInfo)
 			} else {
 				if targetType == "work" {
 					st := domain.WorkStatusDraft
 					_, _ = m.store.PatchWork(targetID, domain.PatchWorkBody{Status: &st})
 				}
-				m.emit(runID, "tree.updated", map[string]any{
+				em.emit(EvWATree, map[string]any{
 					"works": []map[string]any{{"id": targetID, "status": "draft"}},
 				})
-				m.emit(runID, "narrative", map[string]any{
-					"text": "质量自检未达标（演示稿），保留 draft：" + strings.Join(q.Issues, "；"),
-				})
+				em.notice("质量自检未达标（演示稿），保留 draft："+strings.Join(q.Issues, "；"), NoticeWarn)
 			}
-			m.emit(runID, "narrative", map[string]any{"text": "已写入正文并提交 revision。"})
+			em.message("已写入正文并提交 revision。")
 			return nil
 		}},
-	}
-
-	if fromStep > 0 {
-		plan := make([]domain.RunTask, len(steps))
-		for i, s := range steps {
-			st := "pending"
-			if i < fromStep {
-				st = "completed"
-			}
-			plan[i] = domain.RunTask{ID: fmt.Sprintf("t%d", i+1), Title: s.title, Status: st}
-		}
-		_ = m.store.UpdateRunPlan(runID, plan)
 	}
 
 	for i := fromStep; i < len(steps); i++ {
 		select {
 		case <-ctx.Done():
+			em.sealOpenCalls("工单已取消，这次调用没有结果")
 			_ = m.store.InterruptRun(runID)
 			return
 		default:
 		}
-		plan := make([]domain.RunTask, len(steps))
-		for j, s := range steps {
-			st := "pending"
-			switch {
-			case j < i:
-				st = "completed"
-			case j == i:
-				st = "in_progress"
-			}
-			plan[j] = domain.RunTask{ID: fmt.Sprintf("t%d", j+1), Title: s.title, Status: st}
-		}
-		_ = m.store.UpdateRunPlan(runID, plan)
-
 		if err := steps[i].fn(); err != nil {
-			m.emit(runID, "run.failed", map[string]any{"error": err.Error()})
+			em.failed("mock_error", err.Error())
 			_ = m.store.FailRun(runID, map[string]any{"error": err.Error(), "step": i})
 			return
 		}
@@ -239,13 +204,17 @@ func (m *Manager) executeMock(ctx context.Context, runID string, intent domain.R
 		_ = m.store.UpdateRunCheckpoint(runID, cp, map[string]any{})
 	}
 
-	plan := make([]domain.RunTask, len(steps))
-	for j, s := range steps {
-		plan[j] = domain.RunTask{ID: fmt.Sprintf("t%d", j+1), Title: s.title, Status: "completed"}
-	}
-	_ = m.store.UpdateRunPlan(runID, plan)
-	m.emit(runID, "run.completed", map[string]any{"summary": "工单完成（mock executor）"})
+	em.completed("工单完成（mock executor）", false)
 	_ = m.store.CompleteRun(runID, map[string]any{"summary": "ok", "intent": string(intent), "mock": true})
+}
+
+// mustJSONString 把一个字符串编成 JSON 字符串字面量（拼 mock 的工具参数用）。
+func mustJSONString(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return `""`
+	}
+	return string(b)
 }
 
 // mockWriteDelay 慢速演示间隔（0 = 关闭，默认一次性写完）。

@@ -32,9 +32,10 @@ function defaultChildKind(parentKind?: WorkKind | null): string {
   return 'universe'
 }
 
+// 下级可选层级：只有宇宙不能塞到别人下面；系列下可以再挂系列
+// （新水晶神话 ▸ 最终幻想15 这种），单作永远是最底层。
 function kindOptionsFor(parentKind?: WorkKind | null): { value: string; label: string }[] {
-  if (parentKind === 'universe') return KIND_OPTIONS.filter((o) => o.value !== 'universe')
-  if (parentKind === 'series') return KIND_OPTIONS.filter((o) => o.value === 'work')
+  if (parentKind) return KIND_OPTIONS.filter((o) => o.value !== 'universe')
   return KIND_OPTIONS
 }
 
@@ -42,6 +43,8 @@ export interface CreateTarget {
   id: string | null
   title: string
   kind: WorkKind | null
+  /** presetKind 固定层级（「新增文章」用：直接是 work，不给选） */
+  presetKind?: WorkKind
 }
 
 export function CreateNodeModal({
@@ -52,25 +55,58 @@ export function CreateNodeModal({
   onClose: () => void
 }) {
   const nav = useNavigate()
-  const { refreshTree } = useAppStore()
+  const { refreshTree, nodes } = useAppStore()
   const [title, setTitle] = useState('')
   const [kind, setKind] = useState<string>('universe')
   const [medium, setMedium] = useState<string>('game')
+  const [parentId, setParentId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     if (!target) return
     setTitle('')
-    setKind(defaultChildKind(target.kind))
+    setKind(target.presetKind ?? defaultChildKind(target.kind))
     setMedium('game')
+    // 归属**继承点击的那一层**：右键某个系列再让人重选一遍，等于把刚说过的话再问一次。
+    // 首页那个"新建知识库"没有挂点（id 为空），才从"不归属"开始。
+    setParentId(target.id)
   }, [target])
+
+  // 首页开的新建框没有挂点：系列要选所属宇宙（也可以再嵌一层系列）、单作要选所属系列/宇宙。
+  //
+  // 但**游离叶子是允许的**——设计上支持直接挂在根上的独立单作。所以这里强制的是
+  // "必须显式做一次决定"，不是"必须选一个父节点"：列表末尾给一个「不归属」，
+  // 既挡掉手滑建出的孤儿，也不把有意为之的游离条目拦在门外。
+  const NO_PARENT = '__none__'
+  const parentOptions = useMemo(() => {
+    const none = [{ value: NO_PARENT, label: '不归属（游离条目，直接挂在根上）' }]
+    if (kind === 'series') {
+      const unis = nodes.filter((n) => n.kind === 'universe').map((n) => ({ value: n.id, label: `${n.title}（宇宙）` }))
+      const series = nodes.filter((n) => n.kind === 'series').map((n) => ({ value: n.id, label: `${n.title}（系列）` }))
+      return [...unis, ...series, ...none]
+    }
+    if (kind === 'work') {
+      const series = nodes.filter((n) => n.kind === 'series').map((n) => ({ value: n.id, label: `${n.title}（系列）` }))
+      const unis = nodes.filter((n) => n.kind === 'universe').map((n) => ({ value: n.id, label: `${n.title}（宇宙）` }))
+      return [...series, ...unis, ...none]
+    }
+    return []
+  }, [nodes, kind])
+  const needParentPick = !target?.id && (kind === 'series' || kind === 'work') && parentOptions.length > 0
+  const parentLabel = kind === 'series' ? '所属宇宙 / 系列' : '所属系列 / 宇宙'
 
   const submit = async () => {
     if (!target || !title.trim()) return
+    if (needParentPick && !parentId) {
+      Toast.warning(`请选择${parentLabel}`)
+      return
+    }
     setSaving(true)
     try {
+      // 「不归属」= 真正建一个游离条目（parentId 传 null），不是空字符串
+      const resolvedParent = parentId === NO_PARENT ? null : parentId
       const work = await createWork({
-        parentId: target.id,
+        parentId: target.id ?? (needParentPick ? resolvedParent : null),
         kind: kind as WorkKind,
         title: title.trim(),
         medium: kind === 'work' ? (medium as Medium) : undefined,
@@ -78,7 +114,7 @@ export function CreateNodeModal({
       Toast.success(`已创建「${work.title}」`)
       void refreshTree()
       onClose()
-      nav(workPath(work.id, work.slug))
+      nav(workPath(work.id))
     } catch (e) {
       Toast.error(e instanceof Error ? e.message : '创建失败')
     } finally {
@@ -105,6 +141,20 @@ export function CreateNodeModal({
           style={{ width: '100%' }}
         />
       </div>
+      {needParentPick && (
+        <div className="dialog-field">
+          <span className="dialog-label">{parentLabel}</span>
+          <Select<string>
+            value={parentId ?? undefined}
+            onChange={(v) => setParentId(String(v))}
+            optionList={parentOptions}
+            placeholder={
+              kind === 'series' ? '归属的宇宙，或再上一层的系列' : '选择归属的系列（也可直接挂宇宙）'
+            }
+            style={{ width: '100%' }}
+          />
+        </div>
+      )}
       <div className="dialog-field">
         <span className="dialog-label">标题</span>
         <Input
@@ -127,8 +177,8 @@ export function CreateNodeModal({
         </div>
       )}
       <div className="dialog-hint">
-        宇宙 / 系列 / 单作都可以挂资料夹（非标文件、解析稿）；单作建议选对介质，
-        Altas 会据此加载写作规范
+        资料夹挂在宇宙 / 系列上（单作的资料夹是只读视图，走节点菜单的「访问资料夹」）；
+        系列也可以嵌在系列下。单作建议选对介质，Altas 会据此加载写作规范
       </div>
     </Modal>
   )

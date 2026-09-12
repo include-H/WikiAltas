@@ -78,6 +78,25 @@ func NewID() string {
 	return id.String()
 }
 
+// tableHasColumn 检查表里是否有某一列（迁移用）。
+func (s *Store) tableHasColumn(table, column string) (bool, error) {
+	rows, err := s.DB.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
 // Migrate creates tables and FTS if missing.
 func (s *Store) Migrate() error {
 	schema := `
@@ -92,7 +111,6 @@ CREATE TABLE IF NOT EXISTS works (
   kind          TEXT NOT NULL,
   medium        TEXT,
   title         TEXT NOT NULL,
-  slug          TEXT NOT NULL UNIQUE,
   aliases_json  TEXT NOT NULL DEFAULT '[]',
   content_md    TEXT,
   content_ver   INTEGER NOT NULL DEFAULT 0,
@@ -107,7 +125,6 @@ CREATE TABLE IF NOT EXISTS docs (
   id            TEXT PRIMARY KEY,
   folder_of     TEXT NOT NULL REFERENCES works(id),
   title         TEXT NOT NULL,
-  slug          TEXT NOT NULL UNIQUE,
   content_md    TEXT NOT NULL DEFAULT '',
   content_ver   INTEGER NOT NULL DEFAULT 0,
   links_json    TEXT NOT NULL DEFAULT '[]',
@@ -154,7 +171,6 @@ CREATE TABLE IF NOT EXISTS runs (
   intent        TEXT NOT NULL,
   goal          TEXT NOT NULL,
   status        TEXT NOT NULL,
-  plan_json     TEXT NOT NULL DEFAULT '[]',
   checkpoint    TEXT NOT NULL DEFAULT '{}',
   tool_cache    TEXT NOT NULL DEFAULT '{}',
   result_json   TEXT,
@@ -176,9 +192,45 @@ CREATE TABLE IF NOT EXISTS run_events (
   UNIQUE(run_id, seq)
 );
 
+CREATE TABLE IF NOT EXISTS sessions (
+  id         TEXT PRIMARY KEY,
+  target     TEXT NOT NULL DEFAULT '',
+  title      TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
+);
+
+-- 会话消息日志：一条会话 = 一条追加式日志，模型的消息历史是它的**投影**，不单独存。
+-- 这是 dsh「模型可见 ⟺ 有日志」的落地：新工单从这条日志派生上下文，而不是重建。
+-- tool_calls_json 存原始 JSON（store 不 import llm，按不透明字符串处理）。
+-- shadowed_by 非空 = 该行被一次替换（压缩）遮蔽：仍在日志里，但不在投影上。
+-- replaces_seq 是"替换行"的落位：0 = 普通追加（按 seq 排）；
+--   >0 = 本行替换掉从 replaces_seq 起的区间，投影时**占那个位置**。
+--   （dsh 的 surface replace：新节点出现在被替换节点的位置上，而不是日志末尾。）
+-- header_hash / header_reason 记该轮请求的"非历史状态"（工具面 + 调用配置）指纹，
+-- 变了就是一次带原因的请求重塑（对应 dsh 的 request/header）。
+CREATE TABLE IF NOT EXISTS session_messages (
+  id              TEXT PRIMARY KEY,
+  session_id      TEXT NOT NULL,
+  seq             INTEGER NOT NULL,
+  replaces_seq    INTEGER NOT NULL DEFAULT 0,
+  run_id          TEXT NOT NULL DEFAULT '',
+  turn            INTEGER NOT NULL DEFAULT 1,
+  role            TEXT NOT NULL,
+  content         TEXT NOT NULL DEFAULT '',
+  tool_calls_json TEXT NOT NULL DEFAULT '',
+  tool_call_id    TEXT NOT NULL DEFAULT '',
+  tool_name       TEXT NOT NULL DEFAULT '',
+  header_hash     TEXT NOT NULL DEFAULT '',
+  header_reason   TEXT NOT NULL DEFAULT '',
+  shadowed_by     TEXT NOT NULL DEFAULT '',
+  created_at      TEXT NOT NULL,
+  UNIQUE(session_id, seq)
 );
 
 CREATE INDEX IF NOT EXISTS idx_works_parent ON works(parent_id);
@@ -189,9 +241,35 @@ CREATE INDEX IF NOT EXISTS idx_relations_to ON relations(to_id);
 CREATE INDEX IF NOT EXISTS idx_library_work ON library_links(work_id);
 CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status);
 CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, seq);
+CREATE INDEX IF NOT EXISTS idx_sessions_target ON sessions(target, updated_at DESC);
 `
 	if _, err := s.DB.Exec(schema); err != nil {
 		return fmt.Errorf("apply schema: %w", err)
+	}
+	// runs.plan_json 是已移除的"计划任务"遗留列（2026-09-11 连根拔除）——
+	// 老库里有就删掉，新库不再建。
+	if hasColumn, err := s.tableHasColumn("runs", "plan_json"); err != nil {
+		return fmt.Errorf("check runs.plan_json: %w", err)
+	} else if hasColumn {
+		if _, err := s.DB.Exec(`ALTER TABLE runs DROP COLUMN plan_json`); err != nil {
+			return fmt.Errorf("drop runs.plan_json: %w", err)
+		}
+	}
+	// 会话表回填（幂等）：老库里的工单按 workspace 归组成会话，
+	// 标题取该会话最早一单的目标——历史的"一问一答"升级成可召回的会话。
+	if _, err := s.DB.Exec(`
+		INSERT OR IGNORE INTO sessions (id, target, title, created_at, updated_at)
+		SELECT r.workspace,
+		       CASE WHEN instr(r.workspace, '~') > 0
+		            THEN substr(r.workspace, 1, instr(r.workspace, '~') - 1)
+		            ELSE r.workspace END,
+		       COALESCE((SELECT r2.goal FROM runs r2 WHERE r2.workspace = r.workspace
+		                 ORDER BY r2.started_at ASC LIMIT 1), ''),
+		       MIN(r.started_at), MAX(r.last_active)
+		FROM runs r
+		WHERE r.workspace != ''
+		GROUP BY r.workspace`); err != nil {
+		return fmt.Errorf("backfill sessions: %w", err)
 	}
 	// 简易用户系统的隐私列（2026-09-10，见 DESIGN_V2 §3.6）
 	if err := s.migrateVisibility(); err != nil {
@@ -310,30 +388,3 @@ func (e ErrConflict) Error() string { return e.Message }
 type ErrValidation struct{ Message string }
 
 func (e ErrValidation) Error() string { return e.Message }
-
-// slugify generates a URL-safe slug; falls back to id-suffix if empty.
-func slugify(s string) string {
-	var b strings.Builder
-	s = strings.ToLower(strings.TrimSpace(s))
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-			b.WriteRune(r)
-		case r == ' ' || r == '-' || r == '_':
-			b.WriteByte('-')
-		default:
-			// keep CJK and other letters as-is for readable slugs
-			if r > 127 {
-				b.WriteRune(r)
-			}
-		}
-	}
-	out := strings.Trim(b.String(), "-")
-	for strings.Contains(out, "--") {
-		out = strings.ReplaceAll(out, "--", "-")
-	}
-	if out == "" {
-		out = "item-" + NewID()[:8]
-	}
-	return out
-}

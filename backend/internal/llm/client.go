@@ -1,11 +1,14 @@
-// Package llm provides an OpenAI-compatible chat client interface.
+// Package llm 是模型协议客户端层：**协议差异只允许收在这里**，
+// 往上（执行器、前端）只有一种形状——Responses 的输出项与流事件。
+//
+// 目前只实现一种协议：OpenAI 的 Responses API（`/v1/responses`，见 responses.go）。
+// `Config.Protocol` 这个字段保留着，是因为它是"以后要加新协议"的位置：
+// 加协议 = 加一个常量 + 一个客户端 + NewClient 里一个 case，
+// 上层与前端一行都不用动。
 package llm
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +20,18 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+// ProtocolResponses 是当前实现（也是唯一的默认值）。
+const ProtocolResponses = "responses"
+
+// UnsupportedProtocolError 是"设置里填了个我们不认识的协议"。它故意不是
+// 可重试错误，也故意不让调用方静默退回：配置错了就该在工单里炸出来。
+type UnsupportedProtocolError struct{ Protocol string }
+
+func (e UnsupportedProtocolError) Error() string {
+	return fmt.Sprintf("llm: 不支持的协议 %q（当前只支持 %s）——请在设置里把协议改回 %s",
+		e.Protocol, ProtocolResponses, ProtocolResponses)
+}
 
 // streamIdleTimeout：流式连接多久没有任何字节就判死（长回答不受影响，卡死才断）。
 const streamIdleTimeout = 150 * time.Second
@@ -71,13 +86,20 @@ type StreamingClient interface {
 	ChatStream(ctx context.Context, messages []Message, tools []ToolDef, onDelta func(Delta)) (ChatResult, error)
 }
 
-// Config holds OpenAI-compatible endpoint settings.
+// Config holds endpoint settings. Endpoint 是 API 的**基址**
+// （e.g. https://api.openai.com/v1），客户端自己接 /responses。
 type Config struct {
-	Endpoint    string // e.g. https://api.openai.com/v1
+	Endpoint    string
 	APIKey      string
 	Model       string
 	Temperature *float64
 	MaxTokens   *int
+	// ReasoningEffort 是思考等级（off/低/中/高/超高/max）。Responses 规范里它在
+	// `reasoning.effort` 上；空 = 不发这个参数（由网关用默认值）。
+	ReasoningEffort string
+	// Protocol 是协议标识。留空 = 默认（responses）。这是"留后手"的位置：
+	// 以后加协议只动这里和 NewClient 的分派，上层不感知。
+	Protocol string
 }
 
 // ConfigFromEnv builds config from WIKIATLAS_LLM_* env vars.
@@ -93,7 +115,7 @@ func ConfigFromEnv() (Config, bool) {
 		APIKey:   key,
 		Model:    os.Getenv("WIKIATLAS_LLM_MODEL"),
 	}
-	// 输出上限与温度：过去没读，导致请求里根本没有 max_tokens，
+	// 输出上限与温度：过去没读，导致请求里根本没有 max_output_tokens，
 	// 长章节会被服务端默认值截断（表现为写一半、乱码、反复重写）。
 	if v := strings.TrimSpace(os.Getenv("WIKIATLAS_LLM_MAX_TOKENS")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -105,6 +127,8 @@ func ConfigFromEnv() (Config, bool) {
 			cfg.Temperature = &f
 		}
 	}
+	cfg.ReasoningEffort = strings.TrimSpace(os.Getenv("WIKIATLAS_LLM_REASONING_EFFORT"))
+	cfg.Protocol = strings.TrimSpace(os.Getenv("WIKIATLAS_LLM_PROTOCOL"))
 	if cfg.Endpoint == "" {
 		cfg.Endpoint = "https://api.openai.com/v1"
 	}
@@ -123,30 +147,62 @@ func firstEnv(keys ...string) string {
 	return ""
 }
 
-// OpenAIClient is a minimal OpenAI-compatible chat completions client with tool calling.
-type OpenAIClient struct {
-	cfg Config
-	// 非流式请求给整体超时；流式请求不能有整体超时（长回答会被腰斩），
-	// 靠 ChatStream 里的 idle 看门狗兜底。
-	client *http.Client
-	stream *http.Client
+// NewClient 按协议造客户端。空协议 = 默认（responses）。
+//
+// 认不出的协议返回**明确错误**，不静默退回默认协议：静默退回会让人以为
+// "设置生效了"，实际跑的是另一条路——那比直接报错难查得多。
+func NewClient(cfg Config) (Client, error) {
+	p := strings.ToLower(strings.TrimSpace(cfg.Protocol))
+	if p == "" {
+		p = ProtocolResponses
+	}
+	switch p {
+	case ProtocolResponses:
+		return NewResponsesClient(cfg), nil
+	default:
+		return nil, UnsupportedProtocolError{Protocol: cfg.Protocol}
+	}
 }
 
-// NewOpenAIClient creates a client.
-func NewOpenAIClient(cfg Config) *OpenAIClient {
-	// 默认输出上限 8192：足够写完整的一章（1000–1500 汉字 ≈ 2–3k token）留足余量，
-	// 又不至于让模型一次吐出整篇长文（那会被模型自身预算截断 → 残稿覆盖正文）。
-	// 端点通常不校验 max_tokens 上限（实测 131072 也接受），真正的约束来自模型自身。
-	// 需要时用 WIKIATLAS_LLM_MAX_TOKENS 覆盖。
-	if cfg.MaxTokens == nil {
-		def := 8192
-		cfg.MaxTokens = &def
+// ErrorClient 是"配置就是错的"这个状态的载体：任何调用都返回构造时那个错误。
+//
+// 为什么不用 echo 兜底：echo 会静默跑起 mock 流程，界面上看起来一切正常，
+// 而用户配的模型一次都没被调用过。配置错误要在工单里炸出来。
+type ErrorClient struct{ Err error }
+
+func (c ErrorClient) Model() string { return "error" }
+
+func (c ErrorClient) Chat(context.Context, []Message, []ToolDef) (ChatResult, error) {
+	if c.Err == nil {
+		return ChatResult{}, errors.New("llm: 客户端未配置")
 	}
-	return &OpenAIClient{
-		cfg:    cfg,
-		client: &http.Client{Timeout: 300 * time.Second},
-		stream: &http.Client{},
+	return ChatResult{}, c.Err
+}
+
+// EchoClient 是"没有配置任何模型"时的占位：执行器识别到它就跑 mock 流程
+// （演示/离线可用），而不是发一个注定失败的请求。
+type EchoClient struct{}
+
+func (EchoClient) Model() string { return "echo" }
+
+func (EchoClient) Chat(_ context.Context, messages []Message, _ []ToolDef) (ChatResult, error) {
+	last := ""
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			last = messages[i].Content
+			break
+		}
 	}
+	return ChatResult{Content: "(echo) " + last}, nil
+}
+
+// IsEcho 判断是不是"没有真模型"的占位客户端（nil 也算）。
+func IsEcho(c Client) bool {
+	if c == nil {
+		return true
+	}
+	_, ok := c.(EchoClient)
+	return ok
 }
 
 // HTTPError 保留状态码，供执行器判断"该不该重试"。
@@ -166,6 +222,10 @@ func IsRetryable(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
+	var up UnsupportedProtocolError
+	if errors.As(err, &up) {
+		return false
+	}
 	var he HTTPError
 	if errors.As(err, &he) {
 		return he.Status == http.StatusTooManyRequests || he.Status >= 500
@@ -178,301 +238,9 @@ func IsRetryable(err error) bool {
 	return strings.Contains(msg, "llm request:") || strings.Contains(msg, "llm stream:")
 }
 
-func (c *OpenAIClient) Model() string { return c.cfg.Model }
-
-type chatRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Temperature *float64  `json:"temperature,omitempty"`
-	MaxTokens   *int      `json:"max_tokens,omitempty"`
-	Tools       []ToolDef `json:"tools,omitempty"`
-	Stream      bool      `json:"stream,omitempty"`
-}
-
-// chatStreamChunk 是 OpenAI 兼容流式响应里的一帧（只取我们用得到的字段）。
-type chatStreamChunk struct {
-	Choices []struct {
-		Delta struct {
-			Content          *string `json:"content"`
-			ReasoningContent *string `json:"reasoning_content"`
-			ToolCalls        []struct {
-				Index    int    `json:"index"`
-				ID       string `json:"id"`
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls"`
-		} `json:"delta"`
-		FinishReason *string `json:"finish_reason"`
-	} `json:"choices"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error"`
-}
-
-type chatResponse struct {
-	Choices []struct {
-		Message struct {
-			Role      string     `json:"role"`
-			Content   *string    `json:"content"`
-			ToolCalls []ToolCall `json:"tool_calls"`
-		} `json:"message"`
-		FinishReason string `json:"finish_reason"`
-	} `json:"choices"`
-	Error *struct {
-		Message string `json:"message"`
-		Type    string `json:"type"`
-	} `json:"error"`
-}
-
-// Chat implements Client.
-func (c *OpenAIClient) Chat(ctx context.Context, messages []Message, tools []ToolDef) (ChatResult, error) {
-	// Some providers reject null content when tool_calls are present; normalize.
-	norm := make([]Message, len(messages))
-	copy(norm, messages)
-	for i := range norm {
-		if norm[i].Role == "assistant" && len(norm[i].ToolCalls) > 0 && norm[i].Content == "" {
-			norm[i].Content = ""
-		}
-	}
-
-	reqBody := chatRequest{
-		Model:       c.cfg.Model,
-		Messages:    norm,
-		Temperature: c.cfg.Temperature,
-		MaxTokens:   c.cfg.MaxTokens,
-		Tools:       tools,
-	}
-	b, err := json.Marshal(reqBody)
-	if err != nil {
-		return ChatResult{}, err
-	}
-	url := strings.TrimRight(c.cfg.Endpoint, "/") + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
-	if err != nil {
-		return ChatResult{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if c.cfg.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-	}
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return ChatResult{}, fmt.Errorf("llm request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var raw bytes.Buffer
-	if _, err := raw.ReadFrom(resp.Body); err != nil {
-		return ChatResult{}, fmt.Errorf("llm read body: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return ChatResult{}, HTTPError{Status: resp.StatusCode, Body: truncateForErr(raw.String(), 400)}
-	}
-	var cr chatResponse
-	if err := json.Unmarshal(raw.Bytes(), &cr); err != nil {
-		return ChatResult{}, fmt.Errorf("llm decode: %w", err)
-	}
-	if cr.Error != nil {
-		return ChatResult{}, fmt.Errorf("llm error: %s", cr.Error.Message)
-	}
-	if len(cr.Choices) == 0 {
-		return ChatResult{}, fmt.Errorf("llm: no choices returned")
-	}
-	msg := cr.Choices[0].Message
-	content := ""
-	if msg.Content != nil {
-		content = *msg.Content
-	}
-	return ChatResult{Content: content, ToolCalls: msg.ToolCalls}, nil
-}
-
 func truncateForErr(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
 	return s[:n] + "…"
-}
-
-// ChatStream implements StreamingClient：SSE 增量 + 拼回完整 ChatResult。
-// 增量先喂给 onDelta（文本/思维链/工具参数），流结束后返回可落库的完整结果；
-// 与 Chat 共享同一套请求体，provider 不支持 stream 时由调用方回退到 Chat。
-func (c *OpenAIClient) ChatStream(
-	ctx context.Context,
-	messages []Message,
-	tools []ToolDef,
-	onDelta func(Delta),
-) (ChatResult, error) {
-	norm := make([]Message, len(messages))
-	copy(norm, messages)
-	for i := range norm {
-		if norm[i].Role == "assistant" && len(norm[i].ToolCalls) > 0 && norm[i].Content == "" {
-			norm[i].Content = ""
-		}
-	}
-
-	reqBody := chatRequest{
-		Model:       c.cfg.Model,
-		Messages:    norm,
-		Temperature: c.cfg.Temperature,
-		MaxTokens:   c.cfg.MaxTokens,
-		Tools:       tools,
-		Stream:      true,
-	}
-	b, err := json.Marshal(reqBody)
-	if err != nil {
-		return ChatResult{}, err
-	}
-	url := strings.TrimRight(c.cfg.Endpoint, "/") + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
-	if err != nil {
-		return ChatResult{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-	if c.cfg.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-	}
-	// idle 看门狗：流式连接不设整体超时（长回答可能跑十几分钟），
-	// 但超过 streamIdleTimeout 一个字节都没来就取消，避免工单永远挂着。
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	var lastRead atomicInt64
-	lastRead.Store(time.Now().UnixNano())
-	go func() {
-		ticker := time.NewTicker(15 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if time.Since(time.Unix(0, lastRead.Load())) > streamIdleTimeout {
-					cancel()
-					return
-				}
-			}
-		}
-	}()
-	resp, err := c.stream.Do(req.WithContext(ctx))
-	if err != nil {
-		return ChatResult{}, fmt.Errorf("llm request: %w", err)
-	}
-	// 读的时候刷新"最后活动时间"
-	body := &activityReader{rc: resp.Body, last: &lastRead}
-	defer body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		raw, _ := io.ReadAll(io.LimitReader(body, 4096))
-		return ChatResult{}, HTTPError{Status: resp.StatusCode, Body: truncateForErr(string(raw), 400)}
-	}
-
-	var (
-		content   strings.Builder
-		toolOrder []int
-		toolByIdx = map[int]*ToolCall{}
-	)
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, ":") {
-			continue
-		}
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "[DONE]" {
-			break
-		}
-		var chunk chatStreamChunk
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue // 心跳/非 JSON 帧直接跳过
-		}
-		if chunk.Error != nil {
-			return ChatResult{}, fmt.Errorf("llm error: %s", chunk.Error.Message)
-		}
-		if len(chunk.Choices) == 0 {
-			continue
-		}
-		delta := chunk.Choices[0].Delta
-		if delta.ReasoningContent != nil && *delta.ReasoningContent != "" && onDelta != nil {
-			onDelta(Delta{Kind: "reasoning", Text: *delta.ReasoningContent})
-		}
-		if delta.Content != nil && *delta.Content != "" {
-			content.WriteString(*delta.Content)
-			if onDelta != nil {
-				onDelta(Delta{Kind: "text", Text: *delta.Content})
-			}
-		}
-		for _, tc := range delta.ToolCalls {
-			call, ok := toolByIdx[tc.Index]
-			if !ok {
-				call = &ToolCall{Type: "function"}
-				toolByIdx[tc.Index] = call
-				toolOrder = append(toolOrder, tc.Index)
-			}
-			if tc.ID != "" {
-				call.ID = tc.ID
-			}
-			if tc.Function.Name != "" {
-				call.Function.Name = tc.Function.Name
-			}
-			call.Function.Arguments += tc.Function.Arguments
-			if onDelta != nil && (tc.Function.Arguments != "" || tc.Function.Name != "") {
-				onDelta(Delta{
-					Kind:      "tool",
-					Text:      tc.Function.Arguments,
-					ToolIndex: tc.Index,
-					ToolID:    call.ID,
-					ToolName:  call.Function.Name,
-				})
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil && content.Len() == 0 && len(toolOrder) == 0 {
-		return ChatResult{}, fmt.Errorf("llm stream: %w", err)
-	}
-
-	out := ChatResult{Content: content.String()}
-	for _, idx := range toolOrder {
-		if call := toolByIdx[idx]; call != nil {
-			out.ToolCalls = append(out.ToolCalls, *call)
-		}
-	}
-	return out, nil
-}
-
-// EchoClient is a mock used when no LLM is configured. It echoes a canned reply.
-type EchoClient struct{}
-
-func (EchoClient) Model() string { return "echo" }
-
-func (EchoClient) Chat(_ context.Context, messages []Message, _ []ToolDef) (ChatResult, error) {
-	last := ""
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "user" {
-			last = messages[i].Content
-			break
-		}
-	}
-	return ChatResult{Content: "[echo] " + last}, nil
-}
-
-// Resolve returns a configured client or EchoClient.
-func Resolve(cfg Config) Client {
-	if cfg.APIKey != "" {
-		return NewOpenAIClient(cfg)
-	}
-	return EchoClient{}
-}
-
-// IsEcho reports whether c is the no-op echo client.
-func IsEcho(c Client) bool {
-	if c == nil {
-		return true
-	}
-	_, ok := c.(EchoClient)
-	return ok
 }

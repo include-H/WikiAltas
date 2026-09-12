@@ -1,10 +1,34 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
+import { Toast } from '@douyinfe/semi-ui'
 import type { Me, Run, WorkSummary } from '../types'
 import { getMe, getTree, listRuns } from '../lib/api'
-import { readPins, writePins } from '../lib/pins'
+import { MAX_PINS, readPins, writePins } from '../lib/pins'
 
 export type DocMode = 'edit' | 'revision' | 'read'
+
+/** Altas 悬浮窗的位置与尺寸（视口坐标，px）。 */
+export interface ChatRect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+const CHAT_RECT_KEY = 'wikiatlas.chatRect'
+
+/** 读回上次的窗口位置；读不出/字段不全都当"没定过"，由窗口按视口算默认值。 */
+function readChatRect(): ChatRect | null {
+  try {
+    const raw = localStorage.getItem(CHAT_RECT_KEY)
+    if (!raw) return null
+    const r = JSON.parse(raw) as ChatRect
+    if (![r?.x, r?.y, r?.w, r?.h].every((n) => Number.isFinite(n))) return null
+    return r
+  } catch {
+    return null
+  }
+}
 
 interface AppStore {
   nodes: WorkSummary[]
@@ -19,15 +43,16 @@ interface AppStore {
   aiPanelOpen: boolean
   setAiPanelOpen: (open: boolean) => void
   /** AI 侧栏宽度（贴右侧、可拖拽；localStorage 记忆） */
-  aiPanelWidth: number
-  setAiPanelWidth: (width: number) => void
+  /** Altas 悬浮窗的位置与尺寸（视口坐标 px）；null = 还没定过，由窗口按视口算默认值 */
+  chatRect: ChatRect | null
+  setChatRect: (r: ChatRect | null) => void
   activeRuns: Run[]
   refreshRuns: () => Promise<void>
   /** bump when AI committed content so views can refresh */
   contentStamp: number
   notifyContentCommitted: (targetId: string, version: number) => void
   lastCommitted: { targetId: string; version: number } | null
-  /** Altas 正在写入的正文（content.staging 投影，用于"正在写入"标记） */
+  /** Altas 正在写入的正文（wikiatlas.content.staging 带过来的，用于"正在写入"标记） */
   staging: { targetId: string; targetType: string } | null
   setStaging: (v: { targetId: string; targetType: string } | null) => void
   /**
@@ -76,10 +101,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [treeLoading, setTreeLoading] = useState(true)
   const [treeError, setTreeError] = useState<string | null>(null)
   const [aiPanelOpen, setAiPanelOpen] = useState(false)
-  const [aiPanelWidth, setAiPanelWidthState] = useState(() => {
-    const raw = Number(localStorage.getItem('wikiatlas.aiWidth') ?? '')
-    return Number.isFinite(raw) && raw >= 320 ? Math.min(raw, 900) : 460
-  })
+  const [chatRect, setChatRectState] = useState<ChatRect | null>(readChatRect)
   const [activeRuns, setActiveRuns] = useState<Run[]>([])
   const [contentStamp, setContentStamp] = useState(0)
   const [lastCommitted, setLastCommitted] = useState<{ targetId: string; version: number } | null>(
@@ -107,13 +129,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const togglePin = useCallback((id: string) => {
-    setPinnedIds((prev) => {
-      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-      writePins(next)
-      return next
-    })
-  }, [])
+  const togglePin = useCallback(
+    (id: string) => {
+      const isPinned = pinnedIds.includes(id)
+      if (!isPinned && pinnedIds.length >= MAX_PINS) {
+        Toast.warning(`最多置顶 ${MAX_PINS} 篇——先取消一个再置顶`)
+        return
+      }
+      setPinnedIds((prev) => {
+        const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+        writePins(next)
+        return next
+      })
+    },
+    [pinnedIds],
+  )
 
   const askSelection = useCallback(
     ({
@@ -136,11 +166,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const clearAsk = useCallback(() => setAsk(null), [])
 
-  const setAiPanelWidth = useCallback((width: number) => {
-    const clamped = Math.max(320, Math.min(width, Math.round(window.innerWidth * 0.7)))
-    setAiPanelWidthState(clamped)
+  const setChatRect = useCallback((r: ChatRect | null) => {
+    setChatRectState(r)
     try {
-      localStorage.setItem('wikiatlas.aiWidth', String(clamped))
+      if (r) localStorage.setItem(CHAT_RECT_KEY, JSON.stringify(r))
     } catch {
       // 存不了就只在本次会话生效
     }
@@ -208,8 +237,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       refreshMe,
       aiPanelOpen,
       setAiPanelOpen,
-      aiPanelWidth,
-      setAiPanelWidth,
+      chatRect,
+      setChatRect,
       activeRuns,
       refreshRuns,
       contentStamp,
@@ -240,8 +269,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       meLoaded,
       refreshMe,
       aiPanelOpen,
-      aiPanelWidth,
-      setAiPanelWidth,
+      chatRect,
+      setChatRect,
       activeRuns,
       refreshRuns,
       contentStamp,

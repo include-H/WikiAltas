@@ -16,17 +16,59 @@ import (
 
 const maxToolRounds = 40
 
-// 上下文预算：模型窗口有限，长工单的 tool 返回会把它撑爆（表现为后半程开始胡说、忘事）。
+// 上下文窗口是**模型一次能装多少 token**：系统提示 + 全部历史 + 本轮输出。
+// 它是硬预算——超过了请求就发不出去，除非先把历史压下来。所以它由设置页给出
+// （`llm.contextWindow`），整个 harness 就这一个数。
+//
+// 触发压缩的点 = 窗口 × compactRatio（留出输出与工具往返的余量）。
+//
+// 以前这里是个拍出来的 contextBudgetBytes = 200_000 **字节**（≈6.6 万 token）：
+// 那是 32k/128k 窗口时代的数字，在 262k 窗口上等于只用了四分之一就压缩——
+// 正好制造了"压缩丢资料 → 模型重查 → 又压缩"这个循环，而这段注释上方的
+// 长文一直在抱怨这个循环，却没发现数字本身就是病根。
 const (
-	contextBudgetChars = 120_000 // 约 4 万 token，给 32k/128k 窗口都留余量
-	contextKeepRecent  = 12      // 压缩时保留最近的消息条数
-	maxSameToolCall    = 3       // 同名同参工具的重复上限（超过就拦）
+	defaultContextWindow = 262144
+	compactRatio         = 0.75
+	// bytesPerToken 只在"还没测到真实用量"时用来估算（中文约 3 字节/token）。
+	// 一旦有过一次模型调用，就直接用 provider 报的 promptTokens——那是实测值，
+	// 不需要估算。
+	bytesPerToken = 3
 )
+
+// 联网检索预算。经验值：一篇条目 4–8 次检索就够动笔（Claude 那边两三次），
+// 旧值 32 次等于没限制——一次检索的返回（含上下文里的留存）就有数 KB，
+// 32 次足够把整个上下文预算填满，模型却还在搜。
+const (
+	maxWebSearches  = 12
+	maxWebFetches   = 12
+	webBudgetWarnAt = 8 // 到这儿开始每次结果都提醒收手
+	// 重复调用的三级阈值（照 dsh 的 [3,5,8]）：温和提醒 → 具体提醒 → 硬拦。
+	// 只有最后一级才否决——前两级是"加注"，模型可以照常拿到结果再决定。
+	maxRepeatGentle   = 3
+	maxRepeatDetailed = 5
+	maxRepeatHard     = 8
+	// 任务清单多久没更新就提醒（工具调用次数）。一项检索类任务通常 2~4 次
+	// 调用完成，4 次还没动清单基本就是"攒着"了。
+	todoStaleAfter    = 4
+	contextKeepRecent = 24 // 压缩时至少保留最近这么多行
+	// 一轮回答要留的余量：窗口里得给模型自己留出写东西的地方，
+	// 不能把上下文塞到 100%——塞满了它连话都说不出来。
+	outputReserveTokens = 8192
+)
+
+// 不在这里截断工具结果。
+//
+// 入口处逐条裁剪会同时做两件坏事：把模型需要的信息切掉，以及把前缀缓存打碎
+// （改过的结果和 provider 侧缓存的前缀对不上）。dsh 的做法是入口完全不动、
+// **只有压缩能缩小内容**，我们照此办理——常规上限归各工具自己
+// （read_work 30k rune / read_skill 24k / fetch_url 12k / search_web 约 9k），
+// 超预算时由 compactSession 在会话日志上做一次替换，并记一条 context.compacted 事件。
 
 // 会改动内容的工具：只读模式下这些一律拒绝执行。
 var writeToolNames = map[string]bool{
 	"write_content":       true,
 	"patch_section":       true,
+	"edit":                true,
 	"upsert_work":         true,
 	"upsert_relation":     true,
 	"create_doc":          true,
@@ -34,10 +76,11 @@ var writeToolNames = map[string]bool{
 	"sync_library":        true,
 }
 
-// controlTool 是"播报/计划"这类控制面工具：即使重复调用也不拦（模型常用来汇报进度）。
+// controlTool 是"播报/任务面板"这类控制面工具：即使重复调用也不拦（模型常用来汇报进度），
+// 也不出工具芯片——它们自己就有语义事件（wikiatlas 里的 message / todo）。
 func controlTool(name string) bool {
 	switch name {
-	case "narrative", "answer", "update_plan":
+	case "narrative", "answer", "todo_write":
 		return true
 	default:
 		return false
@@ -46,8 +89,21 @@ func controlTool(name string) bool {
 
 // executeLLM runs the real tool-calling chat loop.
 func (m *Manager) executeLLM(ctx context.Context, runID string, intent domain.RunIntent, goal string, ctxMap map[string]any, fromStep int) {
-	client := m.activeClient()
+	effortOverride, _ := ctxMap["reasoningEffort"].(string)
+	client := m.activeClientFor(effortOverride)
 	loader := m.skillLoader()
+
+	// 这一段 loop 的产出统一由 respEmitter 映射成 Responses 流事件（见 responses.go）。
+	em := m.newRespEmitter(runID, client.Model(), fromStep > 0)
+	em.created(fromStep == 0)
+	// 工单元信息（规范里没有）：会话归属、意图、模型、涉及的节点。
+	// 前端拿它把这条消息挂回正确的会话/页面，并在工单页显示归属。
+	em.emit(EvWAMeta, map[string]any{
+		"runId": runID, "sessionId": ctxMap["session"], "goal": goal,
+		"intent": string(intent), "model": client.Model(),
+		"workId": ctxMap["workId"], "docId": ctxMap["docId"], "docMode": ctxMap["docMode"],
+		"startedAt": time.Now().UTC().Format(time.RFC3339Nano),
+	})
 
 	workID, _ := ctxMap["workId"].(string)
 	docID, _ := ctxMap["docId"].(string)
@@ -59,27 +115,29 @@ func (m *Manager) executeLLM(ctx context.Context, runID string, intent domain.Ru
 		docMode = "edit"
 	}
 
-	// resolve medium from work when missing
-	if medium == "" && workID != "" {
-		if w, err := m.store.GetWork(workID); err == nil && w.Medium != nil {
-			medium = *w.Medium
-			ctxMap["medium"] = string(medium)
+	// resolve medium / node kind from work when missing
+	nodeKind := domain.WorkKind("")
+	if workID != "" {
+		if w, err := m.store.GetWork(workID); err == nil {
+			nodeKind = w.Kind
+			if medium == "" && w.Medium != nil {
+				medium = *w.Medium
+				ctxMap["medium"] = string(medium)
+			}
 		}
 	}
 
 	var skillFiles []skill.File
 	var skillErr error
 	if loader != nil {
-		skillFiles, skillErr = loader.FilesForIntent(intent, medium)
+		skillFiles, skillErr = loader.FilesForIntentKind(intent, medium, nodeKind)
 	}
 
-	m.emit(runID, "narrative", map[string]any{"text": "收到工单：" + goal})
+	// 「收到工单：X」不再播报：用户气泡里就有这句话，再回一声只是回声。
 	if skillErr != nil {
-		m.emit(runID, "narrative", map[string]any{"text": "skill 加载失败：" + skillErr.Error() + "，将按通用写作边界继续。"})
+		em.notice("skill 加载失败："+skillErr.Error()+"，将按通用写作边界继续。", NoticeWarn)
 	} else if len(skillFiles) > 0 {
-		m.emit(runID, "narrative", map[string]any{
-			"text": "已加载 wiki-writing skill：" + strings.Join(skill.Names(skillFiles), " + "),
-		})
+		em.notice("已加载 wiki-writing skill："+strings.Join(skill.Names(skillFiles), " + "), NoticeInfo)
 	}
 
 	// build tool registry + cache
@@ -102,6 +160,40 @@ func (m *Manager) executeLLM(ctx context.Context, runID string, intent domain.Ru
 		}
 	}
 
+	// 同一句话连续出现只留一条：模型既走 narrative 工具、又在正文里复述一遍时，
+	// 面板会"同一句说两边"（真实观测）。所有模型口吻的叙事都从这里出去。
+	lastNarrative := ""
+	// skipNarrative：控制工具流式时已经把这句话吐出来过，工具执行到这里时
+	// 它的 Emit 只是把同一句再说一遍——置位期间丢弃（否则同一句出现两次）。
+	skipNarrative := false
+	emitNarrative := func(text string) {
+		if skipNarrative {
+			return
+		}
+		text = strings.TrimSpace(text)
+		if text == "" || text == lastNarrative {
+			return
+		}
+		// 包含也算重复：模型常把**刚流式说过的一大段里的某段**再走 narrative
+		// 复述（真实观测：流式说了"自检完成…＋总结"，narrative 又把总结原样
+		// 说一遍，界面上同一段出现两次）。太短的不做包含判断——可能只是碰巧
+		// 撞上长文里的几个字。
+		if len([]rune(text)) >= 8 && strings.Contains(lastNarrative, text) {
+			return
+		}
+		lastNarrative = text
+		em.message(text)
+	}
+
+	// 联网检索计数：既要给工具读（构造预算提醒），也要给下面的护栏读，
+	// 所以必须在建 registry 之前声明。
+	toolUsage := map[string]int{}
+	// 任务清单新鲜度：模型常把"划勾"攒到收尾一块打（真实观察：整轮只建单、
+	// 到写正文都不更新一次）。每次工具调用 +1，todo_write 成功清零；落后了就
+	// 搭在工具结果里提醒一句——和重复提醒同一条通道，只建议、不否决。
+	toolCallsSinceTodo := 0
+	hasTodoList := false
+
 	reg := tools.NewLibrarianRegistry(tools.LibrarianDeps{
 		Store:     m.store,
 		RunID:     runID,
@@ -110,91 +202,261 @@ func (m *Manager) executeLLM(ctx context.Context, runID string, intent domain.Ru
 		Context:   ctxMap,
 		Skill:     loader,
 		ExaAPIKey: m.exaKey(),
+		ProxyURL:  m.proxyURL(),
 		CacheGet:  cacheGet,
 		CacheSet:  cacheSet,
+		// 工具说的话到这里统一**翻译**成线上事件（工具不需要知道线上协议，
+		// 协议的形状只由 respEmitter 一处拥有）。这张表是穷举的——
+		// 认不出的类型会被当成提醒条露出来，而不是静默消失。
 		Emit: func(eventType string, payload map[string]any) {
-			m.emit(runID, eventType, payload)
-		},
-		OnPlan: func(tasks []domain.RunTask) {
-			_ = m.store.UpdateRunPlan(runID, tasks)
+			switch eventType {
+			case "narrative": // 模型借 narrative / answer 工具说的那句话 → 一个 message 项
+				if t, ok := payload["text"].(string); ok {
+					emitNarrative(t)
+				}
+			case "tasks.updated": // 任务清单（规范里没有）→ wikiatlas.todo
+				em.todo(payload["tasks"])
+			case "content.staging": // 正文写入中
+				em.emit(EvWAStage, payload)
+			case "content.committed": // 写入回执
+				em.emit(EvWACommit, payload)
+			case "tree.updated": // 作品树变更
+				em.emit(EvWATree, payload)
+			default:
+				em.notice("未映射的工具事件 "+eventType+" "+fmt.Sprint(payload), NoticeWarn)
+			}
 		},
 		QualityCheck: func(md string) (bool, []string) {
 			q := CheckWikiQuality(md)
 			return q.OK, q.Issues
 		},
+		// 检索预算快照：由工具在构造结果时写进返回里（执行器不再事后改写）。
+		// 上限的权威在执行器这边，工具只读。
+		WebBudget: func() tools.WebBudget {
+			return tools.WebBudget{
+				Used:   toolUsage["search_web"],
+				Limit:  maxWebSearches,
+				WarnAt: webBudgetWarnAt,
+			}
+		},
 	})
 
 	toolDefs := buildToolDefsFor(intent, docMode)
 
-	// messages: restore from checkpoint on resume
-	var messages []llm.Message
+	// 上下文来自**会话日志的投影**，不重建。
+	// resume 走的也是同一套——日志就是事实源，所以"断之前模型看到什么"和
+	// "续上之后看到什么"天然一致，不存在存下来的和看到的不一样这回事。
+	sessionID, _ := ctxMap["session"].(string)
+	wroteContent := false
+	// 本轮请求头相对上一轮的原因（initial | continue | change）。
+	// 它随**第一条** llm.request 一起发出：开局单独发一条 llm.request 只会让人
+	// 以为发生了两次请求（真实观测：同一 step 出现两条形状还不一样的 llm.request）。
+	headerReason := ""
+	// 问题型工单答过没有：用来在执行器里真正收住循环（见下面的 answer 分支）
+	answered := false
+	lastErr := ""
 	iteration := 0
+
 	if fromStep > 0 {
 		if r, err := m.store.GetRun(runID); err == nil {
-			if restored, ok := restoreMessages(r.Checkpoint); ok && len(restored) > 0 {
-				messages = restored
-			}
 			if it, ok := r.Checkpoint["iteration"].(float64); ok {
 				iteration = int(it)
 			}
 		}
-	}
-	if len(messages) == 0 {
-		brief := buildContextBrief(m.store, workID, docID)
-		messages = buildInitialMessages(intent, goal, ctxMap, skillFiles, medium, workID, docID, docMode, brief)
-	}
-
-	completed := map[string]bool{}
-	if r, err := m.store.GetRun(runID); err == nil {
-		for _, t := range r.Plan {
-			if t.Status == "completed" {
-				completed[t.ID] = true
-			}
+		// 崩在工具执行中间时，日志末尾会留一条没有对应结果的 assistant 行，
+		// 直接请求会被 provider 拒；先补收尾（和 dsh 的崩溃修复同理）。
+		if closed, err := m.closeOpenTurn(sessionID); err != nil {
+			em.notice("补中断收尾失败："+err.Error(), NoticeWarn)
+		} else if closed > 0 {
+			em.notice(fmt.Sprintf("上一轮中断在工具执行中间，已为 %d 次没返回的调用补上收尾。", closed), NoticeInfo)
 		}
 	}
 
-	wroteContent := false
-	lastErr := ""
+	sysPrompt := m.buildSystemPrompt(docMode, intent, medium, skillFiles)
+	brief := buildContextBrief(m.store, workID, docID)
+
+	var (
+		messages []llm.Message
+		turn     int
+	)
+	if fromStep > 0 {
+		msgs, err := m.deriveSessionMessages(sessionID)
+		if err != nil {
+			m.failRun(em, ctxMap, iteration, cache, "读取会话日志失败："+err.Error())
+			return
+		}
+		messages = msgs
+		em.request(map[string]any{
+			"step": iteration, "messages": len(messages), "shapeReason": "resume",
+		})
+	} else {
+		// 老会话（有工单、还没日志）先补种一次，让它也走同一套记忆
+		if err := m.seedSessionFromRuns(sessionID, runID); err != nil {
+			em.notice("补种会话历史失败："+err.Error(), NoticeWarn)
+		}
+		msgs, tn, reason, err := m.openSession(sessionID, runID, sysPrompt, summarizeToolNames(toolDefs),
+			func(t int) string {
+				return buildUserTurn(intent, goal, ctxMap, medium, workID, docID, docMode, brief, t)
+			})
+		if err != nil {
+			m.failRun(em, ctxMap, iteration, cache, "准备会话上下文失败："+err.Error())
+			return
+		}
+		messages, turn = msgs, tn
+		// 请求头的原因留给循环里第一条 llm.request 一起发（见 headerReason）
+		headerReason = reason
+	}
+	// logTurn 把一条消息追加进本会话的日志（幂等：sessionID 为空就什么都不做）。
+	logTurn := func(msg llm.Message) { m.logMessage(sessionID, runID, turn, msg) }
+	// pushTool 把工具结果同时写进内存数组与会话日志——两处**必须**是同一份内容，
+	// 否则"模型看到的"和"日志里的"就分了家，重建不变量立刻会喊。
+	pushTool := func(toolCallID, name, content string) {
+		msg := llm.Message{Role: "tool", ToolCallID: toolCallID, Name: name, Content: content}
+		messages = append(messages, msg)
+		logTurn(msg)
+	}
+
 	// 同一章节的改写次数：防止模型对着某一章反复重写烧额度（观测中它连改 6 次）
 	sectionRewrites := map[string]int{}
-	// 同名同参调用次数：防止模型原地绕圈（同一个 read/search 调 5 遍）
+	// 同名同参调用次数：防止模型原地绕圈（同一个 read/search 调 5 遍）。
+	//
+	// 它是**每次执行一份**：一个 run 就是用户的一句请求，所以用户再插一句话
+	// 天然得到一份全新的计数——dsh 在 agent/pre-step 里专门清链就是为了这件事
+	// （"换了个上下文，跨过去的重复不算绕圈"），我们靠作用域天然满足。
+	// 别把它提到 Manager 上。
 	callCounts := map[string]int{}
+	// 前缀稳定性追踪：请求必须是上一次的追加延长（详见 requestShape）
+	shape := requestShape{}
+	// 上一轮实测的 prompt tokens：这是"现在窗口里装了多少"的唯一可信来源，
+	// 压缩判断优先用它，不靠估算。
+	lastPromptTokens := 0
 
 	for round := 0; round < maxToolRounds; round++ {
 		select {
 		case <-ctx.Done():
-			m.checkpointLLM(runID, ctxMap, messages, iteration, completed, cache, false)
+			m.checkpointLLM(runID, ctxMap, iteration, cache, false)
+			em.sealOpenCalls("工单已取消，这次调用没有结果")
 			_ = m.store.InterruptRun(runID)
 			return
 		default:
 		}
 
 		iteration++
-		// 上下文压缩：超过预算就丢掉中间的工具往返，避免把模型窗口撑爆
-		if compacted, dropped := compactHistory(messages); dropped > 0 {
-			messages = compacted
-			m.emit(runID, "narrative", map[string]any{
-				"text": fmt.Sprintf("上下文较长，已压缩 %d 条历史工具记录。", dropped),
-			})
+		// 上下文预算 = 模型窗口（一个数）。到窗口的 compactRatio 就压一次；
+		// 压完还塞不进去就停下说清楚，而不是发一个注定 400 的请求。
+		window := m.contextWindow()
+		used := m.sessionTokens(sessionID, lastPromptTokens)
+		if used > int(float64(window)*compactRatio) {
+			// 压缩 = 会话日志上的一次显式替换（dsh：能缩小内容的只有压缩，
+			// 而且必须留日志）。它必然打断前缀缓存，所以既发事件，
+			// 也告诉前缀检查"这次改写有据可依"。
+			did, err := m.compactSession(sessionID, runID, turn)
+			if err != nil {
+				em.notice("压缩失败："+err.Error(), NoticeWarn)
+			} else if did {
+				if msgs, derr := m.deriveSessionMessages(sessionID); derr == nil {
+					messages = msgs // 替换发生在日志上，内存这份重新投影
+				}
+				shape.reason = "compaction"
+				em.emit(EvWAContext, map[string]any{
+					"keepRecent":    contextKeepRecent,
+					"reason":        "context_window",
+					"contextWindow": window,
+					"usedTokens":    used,
+				})
+				em.notice("上下文接近窗口上限，已把中间的工具往返替换成一条摘要。", NoticeInfo)
+				used = m.sessionTokens(sessionID, 0)
+			}
 		}
-		result, err := m.callModel(ctx, runID, client, messages, toolDefs)
+		if used+outputReserveTokens > window {
+			m.failRun(em, ctxMap, iteration, cache, fmt.Sprintf(
+				"这段会话已经到 %d token，超过模型窗口 %d（压缩后仍放不下）。开一段新会话继续，或在设置里把窗口填成模型的真实值。",
+				used, window))
+			return
+		}
+
+		// 重建不变量：用会话日志独立投影一遍，和内存里这份逐条比对。
+		// 这是"模型可见 ⟺ 有日志"的可执行版本——两者不一致，就说明有一处
+		// 内容走了不落日志的旁路，那样的请求是日志解释不了的。
+		rebuildOK, rebuildNote := true, ""
+		if sessionID != "" {
+			switch rebuilt, err := m.deriveSessionMessages(sessionID); {
+			case err != nil:
+				rebuildOK, rebuildNote = false, "读取日志失败："+err.Error()
+			case !messagesEqual(rebuilt, messages):
+				rebuildOK = false
+				rebuildNote = fmt.Sprintf("日志折出 %d 条、内存里有 %d 条", len(rebuilt), len(messages))
+			}
+		}
+		if !rebuildOK {
+			em.notice("上下文与会话日志不一致："+rebuildNote+"（已记录，这属于 bug）", NoticeError)
+		}
+
+		// 前缀检查：本次请求必须是上一次的追加延长，否则前缀缓存必然失效。
+		// 不依赖 provider 回报缓存用量——vLLM 这类网关根本不报——所以这是
+		// "前缀有没有被悄悄改写"在缓存不可观测时唯一的验证手段。
+		appendOnly, divergedAt := shape.check(messages)
+		reqPayload := map[string]any{
+			"step":        iteration,
+			"messages":    len(messages),
+			"appendOnly":  appendOnly,
+			"divergedAt":  divergedAt,
+			"shapeReason": shape.reason,
+			"rebuildOK":   rebuildOK,
+		}
+		if headerReason != "" {
+			reqPayload["headerReason"] = headerReason
+			headerReason = "" // 只随第一条发
+		}
+		em.request(reqPayload)
+		if !appendOnly {
+			em.notice(fmt.Sprintf(
+				"前缀在第 %d 条消息处被改写且没有记录原因，缓存会失效（已记录，这属于 bug）。", divergedAt), NoticeError)
+		}
+		shape.prev = append([]llm.Message(nil), messages...)
+		shape.seen = true
+		shape.reason = ""
+
+		result, streamed, err := m.callModel(ctx, em, client, messages, toolDefs)
+		// 这一轮流式出来的那一段话到此为止（下一轮说的是新的一句，是新的 message 项）。
+		// 顺手把它记成"上一句"：模型常常一边流式说话、一边又调 answer/narrative
+		// 工具把同一句再说一遍，不记这一笔，下面那条权威消息就撞不上去重。
+		if said := em.closeMessage(); said != "" {
+			lastNarrative = strings.TrimSpace(said)
+		}
 		if err != nil {
 			lastErr = err.Error()
-			m.emit(runID, "narrative", map[string]any{"text": "模型调用失败：" + lastErr})
-			m.checkpointLLM(runID, ctxMap, messages, iteration, completed, cache, wroteContent)
-			m.emit(runID, "run.failed", map[string]any{"error": lastErr})
+			em.notice("模型调用失败："+lastErr, NoticeError)
+			m.checkpointLLM(runID, ctxMap, iteration, cache, wroteContent)
+			em.failed("llm_error", lastErr)
 			_ = m.store.FailRun(runID, map[string]any{"error": lastErr, "iteration": iteration})
 			return
 		}
 
-		// surface short assistant text as narrative (never raw CoT dumps)
+		// 每轮用量。cacheReadTokens 是"前缀到底有没有命中"的生产信号：
+		// 网关不报时它是 0（不可观测），报的时候它掉到 0 就说明前缀被改写了。
+		if result.Usage.PromptTokens > 0 {
+			lastPromptTokens = result.Usage.PromptTokens
+		}
+		if result.Usage.TotalTokens > 0 {
+			em.addUsage(result.Usage)
+			em.usageEvent(iteration, result.Usage, m.contextWindow())
+		}
+
+		// 模型自己说的那句话：流式时已经边打边出来了（streamed），
+		// 非流式（或没流出字）才在这儿补一条完整消息。
+		if txt := strings.TrimSpace(result.Content); txt != "" && !streamed {
+			if len(result.ToolCalls) == 0 {
+				emitNarrative(truncate(txt, 500))
+			} else if len(txt) < 300 {
+				emitNarrative(truncate(txt, 300))
+			}
+		}
 		if txt := strings.TrimSpace(result.Content); txt != "" && len(result.ToolCalls) == 0 {
-			// final answer without tools
-			m.emit(runID, "narrative", map[string]any{"text": truncate(txt, 500)})
-			messages = append(messages, llm.Message{Role: "assistant", Content: txt})
+			msg := llm.Message{Role: "assistant", Content: txt}
+			messages = append(messages, msg)
+			logTurn(msg)
 			break
-		} else if txt := strings.TrimSpace(result.Content); txt != "" && len(txt) < 300 {
-			m.emit(runID, "narrative", map[string]any{"text": truncate(txt, 300)})
 		}
 
 		if len(result.ToolCalls) == 0 {
@@ -202,16 +464,28 @@ func (m *Manager) executeLLM(ctx context.Context, runID string, intent domain.Ru
 			break
 		}
 
-		messages = append(messages, llm.Message{
+		assistantMsg := llm.Message{
 			Role:      "assistant",
 			Content:   result.Content,
 			ToolCalls: result.ToolCalls,
-		})
+		}
+		messages = append(messages, assistantMsg)
+		logTurn(assistantMsg)
 
-		for _, tc := range result.ToolCalls {
+		// blockCall 是"没执行就拒绝"的统一收尾：模型照样拿到原因，
+		// 界面上是一张失败的工具卡（参数已经流出来了，收尾即可）。
+		blockCall := func(tc llm.ToolCall, name, reason string) {
+			em.callArgsDone(tc.ID, name, tc.Function.Arguments)
+			em.toolResult(tc.ID, name, tc.Function.Arguments, false, map[string]any{
+				"outputSummary": reason, "durationMs": 0,
+			})
+		}
+
+		for i, tc := range result.ToolCalls {
 			select {
 			case <-ctx.Done():
-				m.checkpointLLM(runID, ctxMap, messages, iteration, completed, cache, wroteContent)
+				m.checkpointLLM(runID, ctxMap, iteration, cache, wroteContent)
+				em.sealOpenCalls("工单已取消，这次调用没有结果")
 				_ = m.store.InterruptRun(runID)
 				return
 			default:
@@ -219,23 +493,62 @@ func (m *Manager) executeLLM(ctx context.Context, runID string, intent domain.Ru
 
 			name := tc.Function.Name
 			args := tc.Function.Arguments
-			inputSummary := summarizeToolInput(name, args)
+			toolUsage[name]++
 
-			// 同名同参重复调用（模型绕圈子的典型症状）：超过上限就不再执行，
-			// 直接把"别再重复了"喂回去，省额度也防止对着同一段反复改。
-			callKey := name + "|" + shortHash(args)
-			callCounts[callKey]++
-			if callCounts[callKey] > maxSameToolCall && !controlTool(name) {
+			// 参数不是合法 JSON：模型的花括号没闭合（一次想写太长、被输出上限截断时
+			// 最常见）。绝不能拿去执行，也绝不能让原样进下一次请求——网关解析这种
+			// function_call 会直接 400，整段会话从此不可用（真实事故：一次
+			// write_content 被截断，之后每一轮都 400，工单直接失败）。
+			if !json.Valid([]byte(args)) {
 				out, _ := json.Marshal(map[string]any{
 					"ok": false,
-					"message": fmt.Sprintf("同一调用（%s）已重复 %d 次，不会再生效。请换一种做法，或直接收尾并给出结论。",
-						name, callCounts[callKey]-1),
+					"message": "这次调用的参数不是合法 JSON（{ } 没闭合，通常是一次想写的太长被截断了）。" +
+						"不要原样重发：把内容拆小——先写骨架或前几章，再用 patch_section 逐章补完。",
 				})
-				messages = append(messages, llm.Message{Role: "tool", ToolCallID: tc.ID, Name: name, Content: string(out)})
-				m.emit(runID, "tool.done", map[string]any{
-					"name": name, "outputSummary": "重复调用已拦截", "durationMs": 0,
-				})
+				pushTool(tc.ID, name, string(out))
+				blockCall(tc, name, "参数不是合法 JSON，已拒绝执行")
 				continue
+			}
+
+			// 检索预算：超限一刀切断。但真正的信号是渐进的——
+			// 见下面 withSearchBudgetNote：到 8 次就开始在每次结果里提醒收手。
+			if (name == "search_web" && toolUsage[name] > maxWebSearches) ||
+				(name == "fetch_url" && toolUsage[name] > maxWebFetches) {
+				out, _ := json.Marshal(map[string]any{
+					"ok": false,
+					"message": fmt.Sprintf("联网检索已达本工单上限（%s 已调用 %d 次）。请停止检索，"+
+						"基于已核实的事实开始写作；查不到的细节标「待核实」，不要继续联网。", name, toolUsage[name]-1),
+				})
+				pushTool(tc.ID, name, string(out))
+				blockCall(tc, name, "检索预算已用完，已拦截")
+				continue
+			}
+
+			// 重复调用（模型绕圈子的典型症状）。三层处理，照 dsh 的 repeat-tool-reminder：
+			// **观察并加注，不 veto**——先温和提醒、再具体提醒，最后才硬拦。
+			// 只喊"别重复"没用，两条提醒都给出路（换动作 / 换参数 / 收尾）。
+			//
+			// 判据是**规范化后的参数指纹**：{"a":1,"b":2} 与 {"b":2,"a":1} 是同一个调用。
+			// 拿原始串比会漏判——属性顺序一变就被当成新调用（这是我们以前的写法）。
+			callKey := name + "|" + canonicalArgs(args)
+			callCounts[callKey]++
+			repeatReminder := ""
+			if !controlTool(name) {
+				switch n := callCounts[callKey]; {
+				case n > maxRepeatHard:
+					out, _ := json.Marshal(map[string]any{
+						"ok": false,
+						"message": fmt.Sprintf("同一个调用（%s）已经重复 %d 次，不会再生效。换一种做法、换一组参数，"+
+							"或者——如果证据已经够了——直接收尾给出结论。", name, n-1),
+					})
+					pushTool(tc.ID, name, string(out))
+					blockCall(tc, name, "重复调用已拦截")
+					continue
+				case n >= maxRepeatDetailed:
+					repeatReminder = detailedRepeatReminder(name, n, callKey)
+				case n >= maxRepeatGentle:
+					repeatReminder = gentleRepeatReminder
+				}
 			}
 
 			// 只读模式：写工具一律拒绝（模型仍然可以检索、阅读、回答、播报）
@@ -244,10 +557,8 @@ func (m *Manager) executeLLM(ctx context.Context, runID string, intent domain.Ru
 					"ok":      false,
 					"message": "当前文档处于只读模式：用户只是让 Altas「看」。请用 answer / narrative 给出分析与建议，不要修改正文。",
 				})
-				messages = append(messages, llm.Message{Role: "tool", ToolCallID: tc.ID, Name: name, Content: string(out)})
-				m.emit(runID, "tool.done", map[string]any{
-					"name": name, "outputSummary": "只读模式：已阻止写入", "durationMs": 0,
-				})
+				pushTool(tc.ID, name, string(out))
+				blockCall(tc, name, "只读模式：已阻止写入")
 				continue
 			}
 
@@ -261,25 +572,22 @@ func (m *Manager) executeLLM(ctx context.Context, runID string, intent domain.Ru
 							"ok":      false,
 							"message": "这一章已经改过 2 次了。停止重写：把不确定的地方标成「待核实」，然后继续写还没完成的章节。",
 						})
-						messages = append(messages, llm.Message{
-							Role: "tool", ToolCallID: tc.ID, Name: name, Content: string(out),
+						pushTool(tc.ID, name, string(out))
+						em.callArgsDone(tc.ID, name, args)
+						em.toolResult(tc.ID, name, args, true, map[string]any{
+							"outputSummary": "已阻止第 3 次重写（改用待核实并继续）", "durationMs": 0,
 						})
-						m.emit(runID, "tool.done", map[string]any{
-							"name": name, "outputSummary": "已阻止第 3 次重写（改用待核实并继续）", "durationMs": 0,
-						})
-						m.emit(runID, "narrative", map[string]any{
-							"text": "「" + heading + "」已改 2 次，转入标注「待核实」，继续后面的章节。",
-						})
+						em.notice("「"+heading+"」已改 2 次，转入标注「待核实」，继续后面的章节。", NoticeInfo)
 						continue
 					}
 				}
 			}
 
-			// narrative / update_plan 是"控制工具"，它们自己就产生语义事件
-			// （narrative / plan.updated），不再冒一条工具芯片出来。
-			controlTool := name == "narrative" || name == "update_plan"
-			if !controlTool {
-				m.emit(runID, "tool.started", map[string]any{"name": name, "inputSummary": inputSummary})
+			// narrative / answer 是"控制工具"：它们不产生工具卡，
+			// 要说的话直接是 message 项（流式那一段已经在吐字时画过了）。
+			isControl := controlTool(name)
+			if !isControl {
+				em.callArgsDone(tc.ID, name, args)
 			}
 
 			// tool_cache hit for search_web
@@ -288,13 +596,10 @@ func (m *Manager) executeLLM(ctx context.Context, runID string, intent domain.Ru
 				if q != "" {
 					key := "exa:" + shortHash(q)
 					if cached, ok := cacheGet(key); ok {
-						m.emit(runID, "tool.done", map[string]any{
-							"name": name, "outputSummary": "命中 tool_cache", "durationMs": 0, "cached": true,
+						em.toolResult(tc.ID, name, args, true, map[string]any{
+							"outputSummary": "命中 tool_cache", "durationMs": 0, "cached": true,
 						})
-						messages = append(messages, llm.Message{
-							Role: "tool", ToolCallID: tc.ID, Name: name,
-							Content: string(cached),
-						})
+						pushTool(tc.ID, name, string(cached))
 						continue
 					}
 				}
@@ -302,73 +607,127 @@ func (m *Manager) executeLLM(ctx context.Context, runID string, intent domain.Ru
 
 			tool, ok := reg.Get(name)
 			if !ok {
-				out, _ := json.Marshal(map[string]any{"ok": false, "message": "unknown tool: " + name})
-				messages = append(messages, llm.Message{Role: "tool", ToolCallID: tc.ID, Name: name, Content: string(out)})
-				m.emit(runID, "tool.done", map[string]any{"name": name, "outputSummary": "未知工具", "durationMs": 0})
+				// 模型把 search_works 写成 search_work 这类"单复数 / 漏字"打错很常见
+				// （真实观察）。报错里直接给出最像的正确名字，省掉一轮猜。
+				msg := "unknown tool: " + name + "（未知工具）"
+				if near := nearestToolName(reg.Names(), name); near != "" {
+					msg += "。你要找的可能是 " + near + "——工具名要照工具定义原样写。"
+				}
+				out, _ := json.Marshal(map[string]any{"ok": false, "message": msg})
+				pushTool(tc.ID, name, string(out))
+				blockCall(tc, name, "未知工具："+name)
 				continue
 			}
 
+			toolStart := time.Now()
+			// 控制工具要说的话在流式时已经吐出过：它的 Emit 到这里只是把同一句话
+			// 再说一遍，跳过（否则同一句会出现在两个 message 项里）。
+			skipNarrative = isControl && em.controlStreamed(i)
 			out, err := tool.Execute(ctx, json.RawMessage(args))
+			skipNarrative = false
 			if err != nil {
 				out, _ = json.Marshal(map[string]any{"ok": false, "message": err.Error()})
 			}
 			// mark write_content
-			if name == "write_content" || name == "patch_section" {
+			// 写工具的 diff 统计（工具行显示 +N −M，对齐 MiMo/Codex）
+			var (
+				diffAdd int
+				diffDel int
+				hasDiff bool
+			)
+			if name == "write_content" || name == "patch_section" || name == "edit" {
 				var probe struct {
-					OK bool `json:"ok"`
+					OK        bool `json:"ok"`
+					Additions int  `json:"additions"`
+					Deletions int  `json:"deletions"`
 				}
 				_ = json.Unmarshal(out, &probe)
 				if probe.OK {
 					wroteContent = true
-					completed["t3"] = true
-					completed["t4"] = true
+				}
+				if probe.Additions > 0 || probe.Deletions > 0 {
+					diffAdd, diffDel, hasDiff = probe.Additions, probe.Deletions, true
 				}
 			}
-			if name == "update_plan" {
-				completed["t1"] = true
+
+			// 任务清单新鲜度：搭在结果里的一句话提醒（不否决）。只在清单已经
+			// 建起来之后才开始数——没建清单的小工单不该被催。
+			todoReminder := ""
+			if isControl && name == "todo_write" {
+				var probe struct {
+					OK *bool `json:"ok"`
+				}
+				if json.Unmarshal(out, &probe) == nil && probe.OK != nil && *probe.OK {
+					hasTodoList = true
+					toolCallsSinceTodo = 0
+				}
+			} else if !isControl {
+				toolCallsSinceTodo++
+				if hasTodoList && toolCallsSinceTodo >= todoStaleAfter {
+					todoReminder = fmt.Sprintf(
+						"任务清单已经 %d 次工具调用没更新了：刚做完的项现在就划掉——把整份新清单和下一个动作一起提交就行，别攒到最后一块打。",
+						toolCallsSinceTodo)
+				}
 			}
 
-			summary := summarizeToolOutput(name, out)
-			if !controlTool {
-				payload := map[string]any{
-					"name": name, "outputSummary": summary, "durationMs": 0,
+			// 重复提醒：并进结果里交给模型（前两级不否决，结果照常给它）
+			out = withReminder(out, repeatReminder)
+			out = withReminder(out, todoReminder)
+
+			// 这次调用成功没有：前端要拿它区分"失败了"和"被打断"（后者没有结果）。
+			// 以前 tool.done 不带这个，前端只能把两种都当成功——工具报错在界面上看不见。
+			toolOK := true
+			var okProbe struct {
+				OK *bool `json:"ok"`
+			}
+			if err := json.Unmarshal(out, &okProbe); err == nil && okProbe.OK != nil {
+				toolOK = *okProbe.OK
+			}
+
+			if !isControl {
+				extra := map[string]any{
+					"outputSummary": summarizeToolOutput(name, out),
+					"ok":            toolOK,
+					// 实测耗时。以前这里写死 0：一个从没量过、也没人显示的假数据，
+					// 留着只会让人以为"工具是瞬时的"。
+					"durationMs": time.Since(toolStart).Milliseconds(),
+				}
+				if hasDiff {
+					extra["additions"] = diffAdd
+					extra["deletions"] = diffDel
 				}
 				// 可展开的工具产物（截断后的片段，前端只做只读展示）
 				if art := artifactForTool(name, out); art != nil {
-					payload["artifact"] = art
-					if extra := artifactSummary(name, art); extra != "" {
-						payload["outputSummary"] = summary + " · " + extra
+					extra["artifact"] = art
+					if s := artifactSummary(name, art); s != "" {
+						extra["outputSummary"] = extra["outputSummary"].(string) + " · " + s
 					}
 				}
-				m.emit(runID, "tool.done", payload)
+				em.toolResult(tc.ID, name, args, toolOK, extra)
 			}
-			content := string(out)
-			if len(content) > 8000 {
-				content = content[:8000] + "…"
+			// 入口不截断：见文件顶部关于"只有压缩能缩小内容"的说明。
+			pushTool(tc.ID, name, string(out))
+			m.checkpointLLM(runID, ctxMap, iteration, cache, wroteContent)
+
+			// 「答完就停」不能只写在提示里：问题型工单的交付物就是那一句回答，
+			// 答案已经给出去之后还往下走，只能产出重复的答案与一串收尾
+			// （真实观测：同一句答案发了两遍，外加三行"已就此回答完毕"）。
+			// 决策在这儿做，就在这儿强制——提示词只说它解释得了的规则。
+			if name == "answer" && intent == domain.RunIntentAnswer {
+				answered = true
 			}
-			messages = append(messages, llm.Message{
-				Role: "tool", ToolCallID: tc.ID, Name: name, Content: content,
-			})
-			m.checkpointLLM(runID, ctxMap, messages, iteration, completed, cache, wroteContent)
+		}
+		if answered {
+			break
 		}
 	}
 
 	// quality gate before promoting to ready
 	if wroteContent && (intent == domain.RunIntentCreateWiki || intent == domain.RunIntentContinueWiki) {
-		m.applyQualityGate(runID, workID, docID)
+		m.applyQualityGate(em, workID, docID)
 	}
 
-	m.checkpointLLM(runID, ctxMap, messages, iteration, completed, cache, wroteContent)
-
-	// final plan
-	plan := []domain.RunTask{
-		{ID: "t1", Title: "理解目标", Status: "completed"},
-		{ID: "t2", Title: "检索资料", Status: "completed"},
-		{ID: "t3", Title: "产出内容", Status: "completed"},
-		{ID: "t4", Title: "写入并完成", Status: "completed"},
-	}
-	_ = m.store.UpdateRunPlan(runID, plan)
-	m.emit(runID, "plan.updated", map[string]any{"tasks": taskMapsOf(plan)})
+	m.checkpointLLM(runID, ctxMap, iteration, cache, wroteContent)
 
 	summary := "工单完成"
 	if !wroteContent && intent != domain.RunIntentAnswer {
@@ -377,13 +736,13 @@ func (m *Manager) executeLLM(ctx context.Context, runID string, intent domain.Ru
 	if lastErr != "" {
 		summary += "；最近错误：" + lastErr
 	}
-	m.emit(runID, "run.completed", map[string]any{"summary": summary})
+	em.completed(summary, wroteContent)
 	_ = m.store.CompleteRun(runID, map[string]any{
 		"summary": summary, "intent": string(intent), "wroteContent": wroteContent,
 	})
 }
 
-func (m *Manager) applyQualityGate(runID, workID, docID string) {
+func (m *Manager) applyQualityGate(em *respEmitter, workID, docID string) {
 	targetID := workID
 	targetType := "work"
 	if targetID == "" {
@@ -415,17 +774,15 @@ func (m *Manager) applyQualityGate(runID, workID, docID string) {
 		if targetType == "work" {
 			st := domain.WorkStatusReady
 			_, _ = m.store.PatchWork(targetID, domain.PatchWorkBody{Status: &st})
-			m.emit(runID, "tree.updated", map[string]any{
+			em.emit(EvWATree, map[string]any{
 				"works": []map[string]any{{"id": targetID, "status": "ready"}},
 			})
 		}
-		m.emit(runID, "narrative", map[string]any{"text": "质量自检通过，已标记为 ready。"})
+		em.notice("质量自检通过，已标记为 ready。", NoticeInfo)
 		return
 	}
 	// keep draft; notify
-	m.emit(runID, "narrative", map[string]any{
-		"text": "质量自检未完全达标，保留 draft：" + strings.Join(q.Issues, "；"),
-	})
+	em.notice("质量自检未完全达标，保留 draft："+strings.Join(q.Issues, "；"), NoticeWarn)
 	// annotate latest revision summary via a no-op status ensure draft
 	if targetType == "work" {
 		st := domain.WorkStatusDraft
@@ -433,56 +790,27 @@ func (m *Manager) applyQualityGate(runID, workID, docID string) {
 	}
 }
 
-func (m *Manager) checkpointLLM(runID string, ctxMap map[string]any, messages []llm.Message, iteration int, completed map[string]bool, cache map[string]any, wrote bool) {
+// checkpointLLM 只存"执行进度"（第几轮、工具缓存、上下文），**不存消息**。
+//
+// 消息的耐久副本是会话日志（session_messages），它本来就是追加式的所以不会漂移；
+// 再在检查点里存一份消息数组，等于给自己造第二个事实源——
+// 而两者不一致时，resume 出来的请求就和断之前不是同一个前缀。
+func (m *Manager) checkpointLLM(runID string, ctxMap map[string]any, iteration int, cache map[string]any, wrote bool) {
 	cp := map[string]any{
 		"lastStep":     iteration,
 		"iteration":    iteration,
 		"context":      ctxMap,
 		"wroteContent": wrote,
 	}
-	if len(messages) > 0 {
-		cp["messages"] = compactMessages(messages)
-	}
-	if len(completed) > 0 {
-		ids := make([]string, 0, len(completed))
-		for id := range completed {
-			ids = append(ids, id)
-		}
-		cp["completedTaskIds"] = ids
-	}
 	_ = m.store.UpdateRunCheckpoint(runID, cp, cache)
 }
 
-func restoreMessages(cp map[string]any) ([]llm.Message, bool) {
-	raw, ok := cp["messages"]
-	if !ok {
-		return nil, false
-	}
-	b, err := json.Marshal(raw)
-	if err != nil {
-		return nil, false
-	}
-	var msgs []llm.Message
-	if err := json.Unmarshal(b, &msgs); err != nil {
-		return nil, false
-	}
-	return msgs, true
-}
-
-// compactMessages keeps assistant/tool structure but truncates long tool payloads.
-func compactMessages(in []llm.Message) []llm.Message {
-	out := make([]llm.Message, len(in))
-	for i, msg := range in {
-		out[i] = msg
-		if msg.Role == "tool" && len(msg.Content) > 2000 {
-			out[i].Content = msg.Content[:2000] + "…"
-		}
-		if msg.Role == "assistant" && len(msg.Content) > 4000 {
-			out[i].Content = msg.Content[:4000] + "…"
-		}
-	}
-	// drop earlier system if we already have a later one? keep simple: keep all
-	return out
+// failRun 是失败退场的统一出口：播报 + 落检查点 + response.failed + 状态。
+func (m *Manager) failRun(em *respEmitter, ctxMap map[string]any, iteration int, cache map[string]any, msg string) {
+	em.notice(msg, NoticeError)
+	m.checkpointLLM(em.runID, ctxMap, iteration, cache, false)
+	em.failed("harness_error", msg)
+	_ = m.store.FailRun(em.runID, map[string]any{"error": msg, "iteration": iteration})
 }
 
 func buildToolDefs() []llm.ToolDef {
@@ -516,102 +844,60 @@ func buildToolDefsFor(intent domain.RunIntent, docMode string) []llm.ToolDef {
 	return out
 }
 
-func buildInitialMessages(intent domain.RunIntent, goal string, ctxMap map[string]any, skillFiles []skill.File, medium domain.Medium, workID, docID, docMode, brief string) []llm.Message {
-	var sys strings.Builder
-	sys.WriteString("你是 WikiAltas 的 Altas，为个人媒体库撰写中文百科条目。严格遵守以下规则：\n")
-	sys.WriteString("1. 使用工具完成检索与写入；不要在回复里倾倒思考过程（CoT）。\n")
-	sys.WriteString("2. narrative 是你对用户说的话：一次一句中文，≤40 字，只说\"打算做什么/已确认什么\"，" +
-		"不写思考草稿、不复述工具参数。用户看到的就是这些句子。\n")
-	sys.WriteString("3. 查不到的事实写「待核实」，绝不编造；无 Exa 检索能力时不要凭记忆填事实。\n")
-	sys.WriteString("4. **先认准对象再检索**：同名作品极多。用预取里的「所属层级 + 介质 + 同级单作」锁定目标；" +
-		"检索结果如果与所属宇宙/系列不符（例如把《白狼崛起》当成同名网文），一律不要采用，改用「系列名 + 作品名 + 作者/厂商」重查。\n")
-	sys.WriteString("5. 题记只有一块，位置在说明行之后、第 1 章之前，用 :::epigraph … ::: 围栏：\n")
-	sys.WriteString("   · 优先「引用式」——作品里有名的原句：必须给**可核对的原文**+逐句中文译文+署名行（—— 说话人／出处）；" +
-		"原文核实不到就不要用引用式。\n")
-	sys.WriteString("   · 拿不到原文就用「场景式／诗句式」：站在作品世界里写、落到具体人物与事件，**不写署名行**，也不许编台词。\n")
-	sys.WriteString("6. 资料夹 = 系列：非标资料（解析、设定稿）用 create_doc 挂到对应**系列**节点下；" +
-		"这些资料只能关联**本系列子树内**的单作（links 目标不能跨系列）。\n")
-	sys.WriteString("\n=== 开工第一步：先探测，再决定写法和范围（必须执行）===\n")
-	sys.WriteString("用 get_tree / search_works / read_work 判断目标节点的实际情况，然后按下面分支行动：\n")
-	sys.WriteString("· 节点不存在 → 先 upsert_work 建节点（kind=work；父节点优先用上下文 parentId，否则挂到检索到的宇宙/系列下）\n")
-	sys.WriteString("· 节点存在但正文为空 → 直接建档，不要重复建节点\n")
-	sys.WriteString("· 节点已有正文 + 用户只要求改某章/某段 → 只用 patch_section 局部替换，禁止整篇重写\n")
-	sys.WriteString("· 节点已有正文 + 用户要求整体重写 → 用 write_content，并说明会进 revision 可回滚\n")
-	sys.WriteString("· 用户只是提问 → 用 answer 回答，不要改正文\n")
-	sys.WriteString("\n=== 建档写法（9 章）===\n")
-	sys.WriteString("先用 write_content 写入骨架：正文标题 + 说明块（> 说明：…）+ 题记围栏 + 9 个章标题；\n")
-	sys.WriteString("再用 patch_section 逐章填入正文，每章一次——用户会看到正文一章一章长出来。\n")
-	sys.WriteString("收尾前逐章自检（不通过就不许结束）：\n")
-	sys.WriteString("   · 1–9 章每章都必须有正文，不能只剩标题；\n")
-	sys.WriteString("   · 第 9 章参考资料列出**你实际用过的来源**，≥5 条（带链接或来源名）；\n")
-	sys.WriteString("   · 同一章最多改 2 次：还想改就把不确定处标「待核实」，然后继续下一章。\n")
-
-	// 用户打开文档时的模式决定 Altas 的作业方式（面板会把当前模式一起发过来）
-	sys.WriteString("\n=== 当前文档模式（决定你怎么干活）===\n")
-	switch docMode {
-	case "read":
-		sys.WriteString("用户现在处于【只读模式】——他只让你「看」：\n")
-		sys.WriteString("· 只做阅读、分析、评估、总结、答疑；write_content / patch_section / upsert_work / create_doc 等写操作会被系统拒绝。\n")
-		sys.WriteString("· 结论用 answer 给出：先给判断，再给理由与位置（第几章/哪一句）。\n")
-		sys.WriteString("· 可以指出问题、给出改写建议的文字示例，但不要落库。\n")
-	case "revision":
-		sys.WriteString("用户现在处于【修订模式】——你是一个提建议的编辑。按下面的流程干活：\n")
-		sys.WriteString("1. 先读清作用域：如果工单里带了「用户在正文里选中的内容」，那就是本次修订的范围，只改它；\n")
-		sys.WriteString("   没有选区时，用 read_work 通读后自己划定最小范围（通常是相邻的几个段落）。\n")
-		sys.WriteString("2. 逐段判定「保留 / 改」：符合设定与事实的段落原样保留，不要顺手润色。\n")
-		sys.WriteString("3. 只做定点替换：能用一句话改好的，绝不动三句话；不做整段推倒重写。\n")
-		sys.WriteString("4. 每条改动都要能解释理由，summary 必须以「修订：<理由>」开头（例：修订：术语不统一，统一为「绝境」）。\n")
-		sys.WriteString("5. 未核实的细节不要删，也不要编：要么标「待核实」，要么按已核实的部分软化表述（对齐飞书「谨慎处理」的做法）。\n")
-		sys.WriteString("6. 保留作者原来的风格与用词习惯，不要改成你自己的腔调。\n")
-		sys.WriteString("7. 需要结构调整或大段重写时先别动手：用 narrative 说明「这里建议大改，要不要切到编辑模式处理」。\n")
-		sys.WriteString("8. 写完后必须回读验证：再用 read_work 读一遍改动结果，确认改动生效、没伤到别的段落。\n")
-		sys.WriteString("9. 结束时给改动清单：改了几处、每处属于哪种类型（措辞 / 逻辑 / 事实）。\n")
-		sys.WriteString("注意：替换章节后如果标题文字变了，下一次 patch_section 要用新的标题锚点。\n")
-	default:
-		sys.WriteString("用户现在处于【编辑模式】——你是写手，改完即生效：\n")
-		sys.WriteString("· 可以直接润色、重写、补内容、纠错；整段替换用 write_content，局部改写用 patch_section。\n")
-		sys.WriteString("· 每次写入都会进 revision，用户可一键回滚，所以不必畏手畏脚。\n")
-	}
-	switch intent {
-	case domain.RunIntentCreateWiki, domain.RunIntentContinueWiki:
-		sys.WriteString("本工单是完整建档：按 skill 的 9 章骨架写作，禁止只写大纲就结束。\n")
-	case domain.RunIntentRewriteSection:
-		sys.WriteString("本工单是增量编辑：只改指定章节，不套 9 章骨架，不重写其他章节。\n")
-	case domain.RunIntentWriteDoc:
-		sys.WriteString("本工单是资料文档（资料夹里的长文/分析稿）：不强制 9 章，按用户要求自由结构写作。\n")
-		sys.WriteString("· 先读现状：read_doc 看已有正文（也可用 section 只看一节），别凭空重写用户已有的稿子；\n")
-		sys.WriteString("· 先写骨架再逐节填：write_content(targetType=doc) 写 # 标题 + ## 小节，然后 patch_section(targetType=doc) 逐节补正文；\n")
-		sys.WriteString("· 单次输出有上限（约 4000 token），6000 字这种长文必须一节一节写，不要尝试一次写完；\n")
-		sys.WriteString("· 保留作者原有结构、用词与论证顺序，只补事实、理顺逻辑、统一术语。\n")
-	case domain.RunIntentAnswer:
-		sys.WriteString("本工单是问答：读取必要上下文后用 answer 回答。\n")
-	}
-	if len(skillFiles) > 0 {
-		sys.WriteString("\n=== wiki-writing skill（请遵守）===\n")
-		// 上下文预算：skill 是每次工单都要塞的固定成本，三份文件（SKILL+core+media-*）
-		// 曾经各留 18k 字符 = 最多 5.4 万字符，足以把模型窗口挤爆。
-		// 现在单文件 8k、总量 1.6 万字符封顶；不够就按需用 read_skill 再读。
-		const (
-			maxSkillFileChars  = 8000
-			maxSkillTotalChars = 16000
-		)
-		used := 0
-		for _, f := range skillFiles {
-			if used >= maxSkillTotalChars {
-				sys.WriteString("\n（skill 其余文件已省略，需要时用 read_skill 读取。）\n")
-				break
-			}
-			sys.WriteString("\n----- " + f.Name + " -----\n")
-			c := f.Content
-			if len(c) > maxSkillFileChars {
-				c = string([]rune(c)[:maxSkillFileChars]) + "\n…（截断，完整内容用 read_skill 读）"
-			}
-			used += len(c)
-			sys.WriteString(c)
-			sys.WriteString("\n")
+// buildSystemPrompt 组装本次工单的系统提示：只负责把运行时状态收齐，
+// 交给 renderSystemPrompt 按段渲染。段的内容与顺序在 prompt.go 里（一个事实一个 owner）。
+func (m *Manager) buildSystemPrompt(docMode string, intent domain.RunIntent, medium domain.Medium, skillFiles []skill.File) string {
+	window, userName := defaultContextWindow, ""
+	if st, err := m.store.GetSettings(); err == nil {
+		if st.LLM.ContextWindow > 0 {
+			window = st.LLM.ContextWindow
 		}
+		// 管理员标识只作显示用：让模型被问「我是谁」时知道在给谁做事
+		userName = st.Admin.Username
 	}
+	return renderSystemPrompt(promptState{
+		docMode:         docMode,
+		intent:          intent,
+		medium:          medium,
+		tools:           toolNamesFor(intent, docMode),
+		userName:        userName,
+		contextWindow:   window,
+		maxWebSearches:  maxWebSearches,
+		maxWebFetches:   maxWebFetches,
+		webBudgetWarnAt: webBudgetWarnAt,
+		compactRatio:    compactRatio,
+		skillFiles:      skillFiles,
+	})
+}
 
+// buildSystemPromptFor 是纯函数版本（测试、以及拿不到 store 的场景用）。
+func buildSystemPromptFor(window int, docMode string, intent domain.RunIntent, medium domain.Medium, skillFiles []skill.File) string {
+	return renderSystemPrompt(promptState{
+		docMode:         docMode,
+		intent:          intent,
+		medium:          medium,
+		tools:           toolNamesFor(intent, docMode),
+		contextWindow:   window,
+		maxWebSearches:  maxWebSearches,
+		maxWebFetches:   maxWebFetches,
+		webBudgetWarnAt: webBudgetWarnAt,
+		compactRatio:    compactRatio,
+		skillFiles:      skillFiles,
+	})
+}
+
+// toolNamesFor 把工具面收成集合，段据此决定自己存不存在。
+func toolNamesFor(intent domain.RunIntent, docMode string) map[string]bool {
+	tools := map[string]bool{}
+	for _, d := range buildToolDefsFor(intent, docMode) {
+		tools[d.Function.Name] = true
+	}
+	return tools
+}
+
+// buildUserTurn 拼这一轮的 user 消息：工单信息 + 上下文 brief + 收尾要求。
+// 首轮与后续轮内容基本一致，只多一句"这是延续"的说明。
+func buildUserTurn(intent domain.RunIntent, goal string, ctxMap map[string]any, medium domain.Medium, workID, docID, docMode, brief string, turn int) string {
 	var user strings.Builder
 	user.WriteString("## 工单\n")
 	user.WriteString("意图：" + string(intent) + "\n")
@@ -641,38 +927,32 @@ func buildInitialMessages(intent domain.RunIntent, goal string, ctxMap map[strin
 	if brief != "" {
 		user.WriteString(brief)
 	}
-	if prev, ok := ctxMap["previous"].([]map[string]any); ok && len(prev) > 0 {
-		user.WriteString("\n## 这段会话之前的工单（用户可能是在接着聊）\n")
-		for _, p := range prev {
-			fmt.Fprintf(&user, "· [%v] %v → %v\n", p["status"], p["goal"], p["summary"])
-		}
-		user.WriteString("如果这轮是追问或追加要求：先看现状（read_work / read_doc），" +
-			"不要重复上一单已经做过的检索；上一单没做完的部分接着做。\n")
+	if turn > 1 {
+		user.WriteString("\n## 这是本会话的延续\n")
+		user.WriteString("上文的消息历史就是本会话前几轮的完整经过（含当时的检索结果与判断）；需要细节用工具读，不要凭印象。\n")
 	}
-	user.WriteString("\n请先用 read_skill（如需更多 skill 细节）、search_works、search_web 核实信息，")
-	user.WriteString("再 update_plan 更新计划，用 narrative 播报进度，最后 write_content 写入正文并结束。\n")
-
-	return []llm.Message{
-		{Role: "system", Content: sys.String()},
-		{Role: "user", Content: user.String()},
-	}
-}
-
-func summarizeToolInput(name, args string) string {
-	args = strings.TrimSpace(args)
-	if args == "" {
-		return name
-	}
-	if len(args) > 160 {
-		args = args[:160] + "…"
-	}
-	return args
+	// 这里**不再**写"先 read_skill、再 search_web、最后 write_content 写入正文"这类收尾指令。
+	// 工具怎么用归工具的 description，这一单要产出什么归系统提示的 This task 段——
+	// 写在这里就会出现"闲聊工单被告知用 write_content"，而那个工具压根没下发
+	// （真实观测：模型为此空转了两轮，还专门思考了一遍为什么工具不见了）。
+	return user.String()
 }
 
 func summarizeToolOutput(name string, out json.RawMessage) string {
 	var probe map[string]any
 	if err := json.Unmarshal(out, &probe); err != nil {
 		return truncate(string(out), 120)
+	}
+	// 读作品/资料：给《标题》比"ok"有信息量
+	if name == "read_work" || name == "read_doc" {
+		if w, ok := probe["work"].(map[string]any); ok {
+			if t, _ := w["title"].(string); t != "" {
+				return "《" + truncate(t, 24) + "》"
+			}
+		}
+		if t, _ := probe["title"].(string); t != "" {
+			return "《" + truncate(t, 24) + "》"
+		}
 	}
 	if msg, ok := probe["message"].(string); ok && msg != "" {
 		return truncate(msg, 120)
@@ -710,12 +990,103 @@ func fnv64(s string) uint64 {
 	return h
 }
 
-func taskMapsOf(tasks []domain.RunTask) []map[string]any {
-	out := make([]map[string]any, 0, len(tasks))
-	for _, t := range tasks {
-		out = append(out, map[string]any{"id": t.ID, "title": t.Title, "status": t.Status})
+// clipBytes 已删除：入口不再逐条截断，缩小的动作只归 compactSession
+// （带 context.compacted 事件）。工具各自的输出上限由工具自己把关。
+
+// withBudgetNote 已移入 tools 包：预算提醒在构造结果时写进去，
+// 执行器不再事后改写工具返回值（改写过 = 模型所见与日志不一致）。
+// canonicalArgs 把工具参数规范化，用于"这是不是同一个调用"的指纹。
+//
+// Go 的 encoding/json 在编码 map 时会**递归按 key 排序**，所以"解出来再编回去"
+// 就是规范化：{"a":1,"b":2} 与 {"b":2,"a":1} 得到同一个串。数组顺序保留
+// （数组的顺序是语义的一部分）。半截 JSON 解析不了就原样返回——至少同名同串还拦得住。
+func canonicalArgs(raw string) string {
+	var v any
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return raw
 	}
-	return out
+	if b, err := json.Marshal(v); err == nil {
+		return string(b)
+	}
+	return raw
+}
+
+// 重复调用的两条提醒（照 dsh 的措辞结构：先温和、再具体）。
+// 两条都以**三条出路**收尾——换动作 / 换参数 / 收尾，只喊"别重复"模型不知道往哪走。
+const gentleRepeatReminder = "你在用完全相同的参数重复调用同一个工具。先仔细看上一次的返回：" +
+	"如果事情还没办完，换一种做法或换一组参数，而不是把这个调用再发一遍。"
+
+func detailedRepeatReminder(name string, count int, args string) string {
+	return fmt.Sprintf("检测到重复调用：\n- 工具：%s\n- 连续次数：%d\n- 参数：%s\n"+
+		"这些重复没有推进任何东西。不要再拿这组参数调用它：看完最新结果，换一个动作、换一组参数，"+
+		"或者——如果证据已经够了——直接收尾。", name, count, truncate(args, 500))
+}
+
+// withReminder 把提醒并进工具结果里。
+//
+// 走工具结果、而不是单独发一条 user 消息：我们没有 dsh 那种 plugin source 区分，
+// 单独发一条会进会话日志、被当成一次用户发言（重复计数和"上一轮用户说了什么"都会因此错乱）。
+func withReminder(out json.RawMessage, reminder string) json.RawMessage {
+	if reminder == "" {
+		return out
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		return out
+	}
+	if prev, ok := m["reminder"].(string); ok && prev != "" {
+		reminder = prev + "\n" + reminder
+	}
+	m["reminder"] = reminder
+	b, err := json.Marshal(m)
+	if err != nil {
+		return out
+	}
+	return b
+}
+
+// nearestToolName 给打错的工具名找最像的那个：前缀包含（单复数 / 漏字），
+// 或者编辑距离 ≤2。找不到就返回空串——宁可不猜，别乱指。
+func nearestToolName(names []string, attempt string) string {
+	best := ""
+	bestDist := 3
+	for _, n := range names {
+		if n == attempt {
+			return n
+		}
+		if strings.HasPrefix(n, attempt) || strings.HasPrefix(attempt, n) {
+			if best == "" {
+				best = n
+			}
+			continue
+		}
+		if d := editDistance(n, attempt); d < bestDist {
+			best, bestDist = n, d
+		}
+	}
+	return best
+}
+
+// editDistance 是经典 Levenshtein。工具名都很短、工具数量也不多，DP 足够。
+func editDistance(a, b string) int {
+	ra, rb := []rune(a), []rune(b)
+	prev := make([]int, len(rb)+1)
+	cur := make([]int, len(rb)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ra); i++ {
+		cur[0] = i
+		for j := 1; j <= len(rb); j++ {
+			cost := 1
+			if ra[i-1] == rb[j-1] {
+				cost = 0
+			}
+			cur[j] = min(min(prev[j]+1, cur[j-1]+1), prev[j-1]+cost)
+		}
+		prev, cur = cur, prev
+	}
+	return prev[len(rb)]
 }
 
 func truncate(s string, n int) string {
@@ -742,44 +1113,45 @@ const (
 
 var llmRetryBackoff = []time.Duration{time.Second, 4 * time.Second, 10 * time.Second}
 
-// callModel 优先走流式：模型吐字时立刻发 narrative.delta / tool.delta，
-// 让面板"边想边打"、工具芯片先以运行中出现；不支持流的客户端自动退回 Chat。
+// callModel 优先走流式：模型吐字时立刻发 output_text.delta / reasoning.delta /
+// function_call_arguments.delta，让面板"边想边打"、工具卡先以运行中出现；
+// 不支持流的客户端自动退回 Chat。
+//
+// 第二个返回值 streamed = 这一轮是否流式（执行器据此决定要不要补一条完整消息）。
 func (m *Manager) callModel(
 	ctx context.Context,
-	runID string,
+	em *respEmitter,
 	client llm.Client,
 	messages []llm.Message,
 	tools []llm.ToolDef,
-) (llm.ChatResult, error) {
+) (llm.ChatResult, bool, error) {
 	var lastErr error
 	for attempt := 0; attempt <= llmMaxRetries; attempt++ {
 		if attempt > 0 {
 			wait := llmRetryBackoff[min(attempt-1, len(llmRetryBackoff)-1)]
-			m.emit(runID, "narrative", map[string]any{
-				"text": fmt.Sprintf("模型接口不稳（%s），%s 后重试第 %d 次。", shortReason(lastErr), wait, attempt),
-			})
+			em.notice(fmt.Sprintf("模型接口不稳（%s），%s 后重试第 %d 次。", shortReason(lastErr), wait, attempt), NoticeWarn)
 			select {
 			case <-ctx.Done():
-				return llm.ChatResult{}, ctx.Err()
+				return llm.ChatResult{}, false, ctx.Err()
 			case <-time.After(wait):
 			}
 		}
-		res, err, streaming := m.callModelOnce(ctx, runID, client, messages, tools)
+		res, err, streaming := m.callModelOnce(ctx, em, client, messages, tools)
 		if err == nil {
-			return res, nil
+			return res, streaming, nil
 		}
 		lastErr = err
 		if streaming || !llm.IsRetryable(err) {
-			return res, err
+			return res, streaming, err
 		}
 	}
-	return llm.ChatResult{}, lastErr
+	return llm.ChatResult{}, false, lastErr
 }
 
 // callModelOnce 发一次请求（流式优先），返回 (结果, 错误, 这次是否用了流)。
 func (m *Manager) callModelOnce(
 	ctx context.Context,
-	runID string,
+	em *respEmitter,
 	client llm.Client,
 	messages []llm.Message,
 	tools []llm.ToolDef,
@@ -793,30 +1165,29 @@ func (m *Manager) callModelOnce(
 		return res, err, false
 	}
 	var (
-		lastEmit    time.Time
-		pendingText strings.Builder
-		pendingTool = map[int]llm.Delta{}
-		toolArgsRaw = map[int]string{}
-		emitted     = false
+		lastEmit time.Time
+		// 攒批：节流只影响发送频率，不丢字（早先按帧节流会把窗口里的文本直接扔掉）。
+		// 迁移到 Responses 后这一层更重要——每个增量都是一行 run_events，
+		// 不攒批的话一次长回答能写进去几千行。
+		pendingText      strings.Builder
+		pendingReasoning strings.Builder
+		fullReasoning    strings.Builder
+		toolArgsRaw      = map[int]string{}
+		toolNames        = map[int]string{}
+		toolIDs          = map[int]string{}
+		emitted          = false
+		streamedText     = false
 	)
-	// flush 把"上次推送之后新攒的"增量发出去：
-	// 节流只影响发送频率，不会丢字（早先按帧节流会把窗口里的文本直接扔掉）。
 	flush := func() {
 		if pendingText.Len() > 0 {
-			m.emit(runID, "narrative.delta", map[string]any{"text": pendingText.String()})
+			streamedText = true
+			em.textDelta(pendingText.String())
 			pendingText.Reset()
 		}
-		for index, d := range pendingTool {
-			m.emit(runID, "tool.delta", map[string]any{
-				"index": index,
-				"id":    d.ToolID,
-				"name":  d.ToolName,
-				// args 必须是"累计到现在的参数"：前端要从中抠出 answer/narrative 的
-				// text 字段做流式打字，只给碎片的话永远是半截（观测到过 args='》'）。
-				"args": toolArgsRaw[index],
-			})
+		if pendingReasoning.Len() > 0 {
+			em.reasoningDelta(pendingReasoning.String())
+			pendingReasoning.Reset()
 		}
-		pendingTool = map[int]llm.Delta{}
 	}
 	onDelta := func(d llm.Delta) {
 		emitted = true
@@ -824,10 +1195,36 @@ func (m *Manager) callModelOnce(
 		case "text":
 			pendingText.WriteString(d.Text)
 		case "reasoning":
-			// 思维链只当"还在动"的心跳，不把原文铺给用户（VISUAL_SPEC：不做 CoT dump）
+			// 思考按网关的 reasoning 字段流出来：攒批推送 + 留全文（轮末收尾）
+			fullReasoning.WriteString(d.Text)
+			pendingReasoning.WriteString(d.Text)
 		case "tool":
+			if d.ToolName != "" {
+				toolNames[d.ToolIndex] = d.ToolName
+			}
+			if d.ToolID != "" {
+				toolIDs[d.ToolIndex] = d.ToolID
+				em.toolIndex(d.ToolIndex, d.ToolID)
+			}
 			toolArgsRaw[d.ToolIndex] += d.Text
-			pendingTool[d.ToolIndex] = d
+			// 参数一来，说明这段话已经说完：先把节流缓冲里的文本尾巴落下去。
+			// （曾观测到"正文停了 216 秒、末 10 字到最后才补上"——就是它。）
+			if pendingText.Len() > 0 || pendingReasoning.Len() > 0 {
+				flush()
+			}
+			// **参数增量必须当场转发**。以前这里只攒着、等流读完才把整个累计值
+			// 一次性喂给发射器：界面上是"沉默 216 秒，然后 11752 字符砸下来"，
+			// 而空闲看门狗没杀它（字节一直在到）——是我们在缓冲，不是网关。
+			// 控制工具（answer/narrative）的参数是要说的话，留给流末的
+			// controlText 通道；名字还没到的先攒着，流末的兜底扫描会补上。
+			if name := toolNames[d.ToolIndex]; name != "" && !controlTool(name) {
+				callID := toolIDs[d.ToolIndex]
+				if callID == "" {
+					callID = em.callIDFor(d.ToolIndex)
+				}
+				em.callArgsStream(callID, name, toolArgsRaw[d.ToolIndex])
+			}
+			return
 		}
 		now := time.Now()
 		if now.Sub(lastEmit) < streamEmitInterval {
@@ -839,19 +1236,45 @@ func (m *Manager) callModelOnce(
 
 	res, err := sc.ChatStream(roundCtx, messages, tools, onDelta)
 	flush()
+	// 工具参数：把"累计到现在的参数"喂给发射器，只有新增的那一段会成为 delta。
+	// 控制工具（answer / narrative）的参数不是参数，是要说的话——按文本流出去。
+	for index, raw := range toolArgsRaw {
+		name := toolNames[index]
+		callID := toolIDs[index]
+		if callID == "" {
+			callID = em.callIDFor(index)
+		}
+		if controlTool(name) {
+			// 复述抑制：模型常把刚流式说过的一段又走 narrative/answer 说一遍
+			// （真实事故：流式说了"自检完成＋总结"，narrative 又把总结原样复述，
+			// 同一段在界面上出现两次）。这里挡的是**扫尾通道**，判定用"正在开的
+			// 这条消息里已有的文字"；工具执行时的 Emit 通道由 emitNarrative 的
+			// 同一套包含判定挡（那边比对的是上一句）。
+			if t := partialTextArg(raw); t != "" && len([]rune(t)) >= 8 &&
+				strings.Contains(em.openText(), t) {
+				continue
+			}
+			if em.controlText(index, raw) {
+				streamedText = true
+			}
+			continue
+		}
+		em.callArgsStream(callID, name, raw)
+	}
+	if fullReasoning.Len() > 0 {
+		em.closeReasoning()
+	}
 	if err != nil && res.Content == "" && len(res.ToolCalls) == 0 {
 		if emitted {
 			// 已经吐过字了：重放会重复内容，这次不重试
 			return res, err, true
 		}
 		// provider 不支持 stream（或中途断流）：退回一次性请求，功能不受影响
-		m.emit(runID, "narrative", map[string]any{"text": "流式中断，已回退普通请求。"})
+		em.notice("流式中断，已回退普通请求。", NoticeWarn)
 		res, err = client.Chat(roundCtx, messages, tools)
 		return res, err, false
 	}
-	// 收尾：告诉前端这一轮流式结束（前端据此关掉打字光标）
-	m.emit(runID, "narrative.delta", map[string]any{"text": "", "final": true})
-	return res, err, true
+	return res, err, streamedText
 }
 
 // shortReason 把错误压成一句话，供叙事流播报。
@@ -871,51 +1294,50 @@ func min(a, b int) int {
 	return b
 }
 
-// compactHistory 把超预算的历史压掉：保留系统提示 + 首条用户消息 + 最近若干条，
-// 中间整段替换成一条说明（整段丢才安全 —— 只丢 assistant.tool_calls 或只丢 tool
-// 会让消息序列非法，provider 直接 400）。
-func compactHistory(messages []llm.Message) ([]llm.Message, int) {
-	total := 0
-	for _, m := range messages {
-		total += len(m.Content)
+// requestShape 追踪"这次请求是不是上一次的追加延长"。
+//
+// 这是 dsh"每个请求都可从日志重建"的轻量落地：请求由追加式历史投影而来，
+// 只要头部（system 提示 + 工具 schema）不变，就该是上一次的前缀延长，
+// provider 的前缀缓存才可能命中。任何"没有记录原因的改写"都是 bug。
+//
+// 为什么不直接看 provider 的缓存用量：自建 vLLM 网关这类后端根本不回
+// cached_tokens，命中与否在 API 上是不可观测的，只能自己验。
+type requestShape struct {
+	seen bool
+	prev []llm.Message
+	// reason 是上一次请求被重塑的原因（"" = 纯追加）。目前只有压缩会设。
+	reason string
+}
+
+// check 判断 cur 是否仍是 prev 的追加延长，返回 (是否追加, 首个分歧下标)。
+// 首次请求、以及上一次被有记录地重塑过时，重建基线并直接通过。
+func (s *requestShape) check(cur []llm.Message) (bool, int) {
+	if !s.seen || s.reason != "" {
+		return true, -1
 	}
-	if total <= contextBudgetChars || len(messages) <= contextKeepRecent+3 {
-		return messages, 0
+	if len(cur) < len(s.prev) {
+		return false, len(cur)
 	}
-	keepFrom := len(messages) - contextKeepRecent
-	if keepFrom < 3 {
-		return messages, 0
-	}
-	// 起点必须是"非 tool 返回"的消息，否则会出现没有对应 tool_calls 的孤儿回复
-	start := -1
-	for i := keepFrom; i < len(messages); i++ {
-		if messages[i].Role == "user" {
-			start = i
-			break
+	for i := range s.prev {
+		if !sameMessage(s.prev[i], cur[i]) {
+			return false, i
 		}
 	}
-	if start < 0 {
-		for i := keepFrom; i < len(messages); i++ {
-			if messages[i].Role != "tool" {
-				start = i
-				break
-			}
+	return true, -1
+}
+
+func sameMessage(a, b llm.Message) bool {
+	if a.Role != b.Role || a.Content != b.Content ||
+		a.ToolCallID != b.ToolCallID || a.Name != b.Name ||
+		len(a.ToolCalls) != len(b.ToolCalls) {
+		return false
+	}
+	for i := range a.ToolCalls {
+		if a.ToolCalls[i] != b.ToolCalls[i] {
+			return false
 		}
 	}
-	if start <= 2 {
-		return messages, 0
-	}
-	dropped := start - 2
-	out := make([]llm.Message, 0, len(messages)-dropped+1)
-	out = append(out, messages[:2]...)
-	out = append(out, llm.Message{
-		Role: "user",
-		Content: fmt.Sprintf(
-			"（上下文压缩：中间 %d 条工具调用与返回已省略，因为窗口放不下。需要时重新调用工具读取，不要凭记忆写。）",
-			dropped),
-	})
-	out = append(out, messages[start:]...)
-	return out, dropped
+	return true
 }
 
 // streamEnabled 允许用 WIKIATLAS_LLM_STREAM=0 关掉流式（排障用，默认开）。

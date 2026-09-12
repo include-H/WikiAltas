@@ -1,4 +1,4 @@
-import type { WorkKind, WorkStatus, WorkSummary } from '../types'
+import type { WorkSummary } from '../types'
 
 export interface TreeNodeData {
   key: string
@@ -7,8 +7,8 @@ export interface TreeNodeData {
   children?: TreeNodeData[]
 }
 
-// 「系列 = 资料夹」：系列节点在建出来的时候就带着自己的资料夹，
-// 树里用一行合成节点呈现（不是 works 表里的真实节点）。
+// 资料夹是容器节点自己的抽屉（不是 works 表里的真实节点）：宇宙与系列各有一份，
+// 单作不挂——单作的正文本身就是那个条目。树里给这两类节点合成一行「资料夹」。
 export const FOLDER_KEY_PREFIX = 'folder:'
 
 export function folderKey(workId: string): string {
@@ -23,14 +23,15 @@ export function folderKeyWorkId(key: string): string {
   return key.slice(FOLDER_KEY_PREFIX.length)
 }
 
-/** 给每个系列节点挂一行「资料夹」子项。 */
+/** 给宇宙 / 系列节点挂一行「资料夹」子项（单作不挂）。 */
 export function attachFolderRows(nodes: WorkSummary[]): TreeNodeData[] {
   const tree = buildTreeData(nodes)
   const kindById = new Map(nodes.map((n) => [n.id, n.kind]))
   const walk = (rows: TreeNodeData[]) => {
     for (const row of rows) {
       const realChildren = (row.children ?? []).filter((c) => !isFolderKey(c.key))
-      if (kindById.get(row.key) === 'series') {
+      const kind = kindById.get(row.key)
+      if (kind === 'universe' || kind === 'series') {
         row.children = [
           ...realChildren,
           { key: folderKey(row.key), value: folderKey(row.key), label: '资料夹' },
@@ -43,21 +44,6 @@ export function attachFolderRows(nodes: WorkSummary[]): TreeNodeData[] {
   }
   walk(tree)
   return tree
-}
-
-export const STATUS_META: Record<
-  WorkStatus,
-  { color: 'grey' | 'orange' | 'green'; text: string; label: string }
-> = {
-  stub: { color: 'grey', text: 'stub', label: '待建档' },
-  draft: { color: 'orange', text: 'draft', label: '草稿' },
-  ready: { color: 'green', text: 'ready', label: '就绪' },
-}
-
-export const KIND_META: Record<WorkKind, { text: string; label: string }> = {
-  universe: { text: 'universe', label: '宇宙' },
-  series: { text: 'series', label: '系列' },
-  work: { text: 'work', label: '单作' },
 }
 
 /** Flat node list → nested tree data, ordered by sortOrder then title. */

@@ -6,7 +6,7 @@ import { useLocation } from 'react-router-dom'
 import SideNav from './SideNav'
 import TopBar from './TopBar'
 import AiPanel from './AiPanel'
-import AiSidebar from './AiSidebar'
+import ChatWindow from './ChatWindow'
 import { useAppStore } from '../../lib/store'
 import { UNKNOWN_WORK_ID } from '../../lib/routes'
 
@@ -14,8 +14,6 @@ export default function AppShell() {
   const {
     aiPanelOpen,
     setAiPanelOpen,
-    aiPanelWidth,
-    setAiPanelWidth,
     nodes,
     sidebarCollapsed,
     activeRuns,
@@ -61,9 +59,9 @@ export default function AppShell() {
             <Outlet />
           </div>
           {me.authed && aiPanelOpen && (
-            <AiSidebar width={aiPanelWidth} onWidthChange={setAiPanelWidth}>
+            <ChatWindow>
               <AiPanel workId={workId} workTitle={workTitle} docId={docId} />
-            </AiSidebar>
+            </ChatWindow>
           )}
         </div>
         {me.authed && !aiPanelOpen && (

@@ -2,33 +2,39 @@
 // components/MarkdownRenderer.vue buildEpigraphHtml）的原始实现——
 // 无底色无边框，只有一对对角装饰引号、居中排布、分行排版、署名右对齐。
 //
-// 相对于原实现的语言扩展：题记不只有中英，日文（假名）、韩文、西里尔、
-// 希腊、阿拉伯、希伯来、天城文、泰文等非拉丁书写系统一律按"装饰大字"处理；
-// 只有纯拉丁字母（含重音扩展）的行才降级为小字。
+// 核心观感来自萌娘百科「使命召唤：无尽战争」词条 → GameManager：**外文原文小字、中文译文大字**，
+// 逐行交替。原文可能是日文、韩文、西里尔……不只拉丁——所以判定依据是**这一行是不是中文**，
+// 而不是"是不是拉丁"。凡非中文书写系统一律降级为小字（原文），中文行放大为装饰大字（中译）。
 
-/** display = 装饰大字（CJK/日文/韩文/西里尔…）；latin = 小字（纯拉丁文本）。 */
+/** display = 装饰大字（中文/中译）；latin = 小字（一切非中文原文）。 */
 export type EpigraphLineType = 'display' | 'latin'
 
 /** 拉丁字母（含拉丁扩展 A/B、重音字符）。 */
-const LATIN_SCRIPT = /[A-Za-z\u00c0-\u024f\u1e00-\u1eff]/
+const LATIN_SCRIPT = /[A-Za-zÀ-ɏḀ-ỿ]/
 
-/** 非拉丁书写系统：平假名/片假名、CJK、韩文、西里尔、希腊、希伯来、阿拉伯、天城文、泰文、兼容汉字。 */
-const NON_LATIN_SCRIPT =
-  /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af\u0400-\u04ff\u0370-\u03ff\u0590-\u05ff\u0600-\u06ff\u0900-\u097f\u0e00-\u0e7f]/
+/** 汉字（含扩展 A、兼容汉字）。这是"中文行"的判据。 */
+const HAN_SCRIPT = /[㐀-䶿一-鿿豈-﫿]/
+
+/** 明确的非中文书写系统：假名、韩文、西里尔、希腊、希伯来、阿拉伯、天城文、泰文。
+ *  优先级高于汉字——日文行夹汉字，必须先靠假名认成日文，才能降到小字。 */
+const NON_CHINESE_SCRIPT =
+  /[぀-ヿㇰ-ㇿᄀ-ᇿ㄰-㆏가-힯Ѐ-ӿͰ-Ͽ֐-׿؀-ۿऀ-ॿ฀-๿]/
 
 /** 分行/分段的句读标点（中文、日文、拉丁）。 */
 const PUNCTUATION = '，。！？；：、,.!?;:｡､'
 
 /**
  * 每一行的排版分类：
- * - 'en'：整行为纯英文（含数字/标点）→ 小字
- * - 'cn'：含中文 / 中英混排 / 无字母 → 装饰性大字
+ * - 'display'：中文行（含汉字、中英混排）→ 装饰大字（中译）
+ * - 'latin'  ：非中文原文（拉丁、日文、韩文、西里尔…）→ 小字（原文）
  *
- * 历史 bug（原实现注释）：曾用「ASCII 字母数 > 中文字符数」判定，
- * 导致"Sam Fisher 依然更激进了，"这类中英混排行被误判为纯英文小字。
+ * 两个历史 bug 都源于判据选错：
+ * ① 原实现用「ASCII 字母数 > 中文字符数」，把"Sam Fisher 依然更激进了，"这类中英混排误判成小字；
+ * ② 曾把"非拉丁书写系统"当大字，日文原文（含假名）被一并放大，与其中译同为大字、字号对照消失。
  */
 export function classifyEpigraphLine(line: string): EpigraphLineType {
-  if (NON_LATIN_SCRIPT.test(line)) return 'display'
+  if (NON_CHINESE_SCRIPT.test(line)) return 'latin'
+  if (HAN_SCRIPT.test(line)) return 'display'
   if (LATIN_SCRIPT.test(line)) return 'latin'
   // 纯数字/符号行按大字处理（与原始实现一致）
   return 'display'

@@ -1,23 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { Banner, Button, Empty, Spin, Tag, Toast } from '@douyinfe/semi-ui'
-import type { Work } from '../types'
+import type { LibraryLink, Work } from '../types'
 import { getWork, putWorkContent, patchWork } from '../lib/api'
 import { useAppStore } from '../lib/store'
-import { workPath } from '../lib/routes'
 import OutlinePane from '../components/shell/OutlinePane'
 import MarkdownEditor from '../components/editor/MarkdownEditor'
 import DocActions from '../components/editor/DocActions'
 import PendingRevisions from '../components/editor/PendingRevisions'
+import GameAtlasSuggest from '../components/library/GameAtlasSuggest'
 import { parseOutline } from '../lib/mdOutline'
 import { useLiveRefresh } from '../lib/useLiveRefresh'
 
 export default function WorkView() {
   const { id } = useParams()
   const nav = useNavigate()
-  const loc = useLocation()
   const { contentStamp, lastCommitted, staging, setAiPanelOpen, docMode, me } = useAppStore()
   const [work, setWork] = useState<Work | null>(null)
+  const [links, setLinks] = useState<LibraryLink[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -34,11 +34,12 @@ export default function WorkView() {
       setError(null)
     }
     try {
-      // Resolve solely by UUID — slug in the URL is cosmetic and ignored
+      // Resolve solely by UUID — 路径里除了 UUID 不认别的（旧链接多带的 slug 段忽略）
       const res = await getWork(requested)
       if (routeIdRef.current !== requested) return
       if (!res?.work) throw new Error('作品不存在或已被删除')
       setWork(res.work)
+      setLinks(res.libraryLinks ?? [])
       setOutlineMd(res.work.contentMd ?? '')
     } catch (e) {
       if (routeIdRef.current !== requested) return
@@ -54,22 +55,6 @@ export default function WorkView() {
     void load()
   }, [load])
 
-  // If a cosmetic slug is present but stale, replaceState to the canonical URL.
-  // Bare `/w/:id` is valid and is NOT rewritten to include a slug.
-  useEffect(() => {
-    if (!work || !id) return
-    // 关键：切换文章时 work 还停留在上一篇，这时绝不能拿它去改写 URL，
-    // 否则会出现"点第二篇又跳回第一篇"的来回切换。
-    if (work.id !== id) return
-    const rest = loc.pathname.slice(`/w/${id}`.length)
-    if (!rest.startsWith('/') || rest === '/') return
-    const seg = decodeURIComponent(rest.slice(1).split('/')[0] ?? '')
-    if (seg === '' || seg === 'folder') return
-    if (seg !== work.slug) {
-      nav(workPath(work.id, work.slug), { replace: true })
-    }
-  }, [work, id, loc.pathname, nav])
-
   // refresh when AI commits to this work
   useEffect(() => {
     if (!work || !lastCommitted) return
@@ -80,7 +65,7 @@ export default function WorkView() {
 
   const headings = useMemo(() => parseOutline(outlineMd), [outlineMd])
 
-  // "Altas 正在写入"只在 content.staging 期间成立；提交后由 content.committed 清掉
+  // "Altas 正在写入"只在 wikiatlas.content.staging 期间成立；提交后由 wikiatlas.content.committed 清掉
   const aiWriting = useMemo(
     () => !!work && staging?.targetId === work.id,
     [staging, work],
@@ -154,6 +139,7 @@ export default function WorkView() {
       />
       <div className="work-content">
         {me.authed && <PendingRevisions workId={work.id} onReload={load} />}
+        <GameAtlasSuggest work={work} />
         <MarkdownEditor
           key={work.id}
           title={work.title}
@@ -168,6 +154,7 @@ export default function WorkView() {
               work={work}
               onReload={load}
               onDeleted={() => nav('/')}
+              libraryLinks={links}
             />
           ) : (
             <Tag size="small" color={work.visibility === 'public' ? 'green' : 'grey'}>

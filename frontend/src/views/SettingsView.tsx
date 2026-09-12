@@ -22,9 +22,12 @@ interface FormState {
   endpoint: string
   model: string
   apiKey: string
+  effort: string
   temperature: string
   maxTokens: string
+  contextWindow: string
   exaApiKey: string
+  proxyUrl: string
   embyUrl: string
   embyApiKey: string
   komgaUrl: string
@@ -43,9 +46,12 @@ const EMPTY_FORM: FormState = {
   endpoint: '',
   model: '',
   apiKey: '',
+  effort: 'medium',
   temperature: '',
   maxTokens: '',
+  contextWindow: '',
   exaApiKey: '',
+  proxyUrl: '',
   embyUrl: '',
   embyApiKey: '',
   komgaUrl: '',
@@ -65,8 +71,11 @@ function toForm(st: Settings): FormState {
     ...EMPTY_FORM,
     endpoint: st.llm.endpoint ?? '',
     model: st.llm.model ?? '',
+    effort: st.llm.reasoningEffort || 'medium',
     temperature: st.llm.temperature != null ? String(st.llm.temperature) : '',
     maxTokens: st.llm.maxTokens != null ? String(st.llm.maxTokens) : '',
+    contextWindow: st.llm.contextWindow ? String(st.llm.contextWindow) : '',
+    proxyUrl: st.search.proxyUrl ?? '',
     embyUrl: st.library.embyUrl ?? '',
     komgaUrl: st.library.komgaUrl ?? '',
     gameatlasUrl: st.library.gameatlasUrl ?? '',
@@ -119,11 +128,13 @@ export default function SettingsView() {
         llm: {
           endpoint: form.endpoint,
           model: form.model,
+          reasoningEffort: form.effort,
           apiKey: form.apiKey || undefined,
           temperature: form.temperature ? Number(form.temperature) : undefined,
           maxTokens: form.maxTokens ? Number(form.maxTokens) : undefined,
+          contextWindow: form.contextWindow ? Number(form.contextWindow) : undefined,
         },
-        search: { exaApiKey: form.exaApiKey || undefined },
+        search: { exaApiKey: form.exaApiKey || undefined, proxyUrl: form.proxyUrl },
         library: {
           embyUrl: form.embyUrl || undefined,
           embyApiKey: form.embyApiKey || undefined,
@@ -192,19 +203,25 @@ export default function SettingsView() {
   if (!me.authed) {
     return (
       <div className="settings-view">
-        <Banner
-          type="info"
-          description="设置需要登录后才能查看与修改。"
-        />
-        <Button style={{ marginTop: 12 }} theme="solid" type="primary" onClick={() => nav('/login')}>
-          去登录
-        </Button>
+        <div className="settings-inner">
+          <Banner
+            type="info"
+            description="设置需要登录后才能查看与修改。"
+          />
+          <Button style={{ marginTop: 12 }} theme="solid" type="primary" onClick={() => nav('/login')}>
+            去登录
+          </Button>
+        </div>
       </div>
     )
   }
 
   return (
     <div className="settings-view">
+      {/* 限宽放**内层**：滚动容器（.settings-view）通栏，滚动条落在窗口右边。
+          以前 max-width 加在滚动容器自身上，宽屏下容器 900px 居中，
+          滚动条悬在屏幕中间、右侧一大片死白（用户截图）。 */}
+      <div className="settings-inner">
       <div className="settings-head">
         <Title heading={4} style={{ margin: 0 }}>
           设置
@@ -228,6 +245,19 @@ export default function SettingsView() {
           <div className="settings-field">
             <span className="settings-label">模型</span>
             <Input value={form.model} onChange={(v) => set('model', v)} placeholder="gpt-4o-mini / Qwen / deepseek-v4-flash" />
+          </div>
+          <div className="settings-field-inline">
+            <div className="settings-field">
+              <span className="settings-label">思考等级</span>
+              <Select<string> value={form.effort} onChange={(v) => set('effort', String(v))} style={{ width: '100%' }}>
+                <Select.Option value="off">关闭</Select.Option>
+                <Select.Option value="low">低</Select.Option>
+                <Select.Option value="medium">中</Select.Option>
+                <Select.Option value="high">高</Select.Option>
+                <Select.Option value="xhigh">超高</Select.Option>
+                <Select.Option value="max">最高</Select.Option>
+              </Select>
+            </div>
           </div>
           <div className="settings-field">
             <span className="settings-label">
@@ -266,8 +296,22 @@ export default function SettingsView() {
               />
             </div>
           </div>
+          <div className="settings-field">
+            <span className="settings-label">上下文窗口 (tokens)</span>
+            <InputNumber
+              value={form.contextWindow ? Number(form.contextWindow) : undefined}
+              onChange={(v) => set('contextWindow', v == null ? '' : String(v))}
+              min={1024}
+              max={2000000}
+              step={1024}
+              placeholder="默认 262144"
+              style={{ width: '100%' }}
+            />
+          </div>
           <Text type="tertiary" size="small">
-            留空表示用模型默认值；这两项只影响新开的工单。
+            Temperature 与输出上限只影响新开的工单。**上下文窗口是硬预算**：它是一次会话
+            能装下的 token 总数（系统提示 + 全部历史 + 本轮输出）。接近它时 Altas 会压缩历史，
+            压完还放不下就发不出消息——所以这个数要填模型的真实值。
           </Text>
           <div className="settings-actions">
             <Button loading={testing} onClick={() => void runTest()}>
@@ -291,6 +335,19 @@ export default function SettingsView() {
           </div>
           <Text type="tertiary" size="small">
             Altas 用它核实发行日期、销量、获奖这类外部事实；结果按 query 缓存 30 天。
+          </Text>
+
+          <div className="settings-field" style={{ marginTop: 14 }}>
+            <span className="settings-label">网络代理（出外网用）</span>
+            <Input
+              value={form.proxyUrl}
+              onChange={(v) => set('proxyUrl', v)}
+              placeholder="http://192.168.1.253:7890（留空 = 不走代理）"
+            />
+          </div>
+          <Text type="tertiary" size="small">
+            fetch_url 抓单个网页时会直连；直连超时 Altas 会自动带 useProxy 用这个代理重试同一页。
+            检索（Exa）走自己的通道，不受这里影响。
           </Text>
         </Card>
 
@@ -343,6 +400,10 @@ export default function SettingsView() {
             <div className="settings-field">
               <span className="settings-label">管理员标识（仅显示用）</span>
               <Input value={form.adminUsername} onChange={(v) => set('adminUsername', v)} />
+              <Text type="tertiary" size="small">
+                Altas 会知道它在给谁做事（被问「我是谁」时用得上）。它只是显示名，
+                不参与登录、不代表任何权限。
+              </Text>
             </div>
             <div className="settings-field">
               <span className="settings-label">
@@ -406,13 +467,18 @@ export default function SettingsView() {
           <div className="settings-field-inline">
             <div className="settings-field">
               <span className="settings-label">GameAtlas URL</span>
-              <Input value={form.gameatlasUrl} onChange={(v) => set('gameatlasUrl', v)} />
+              <Input value={form.gameatlasUrl} onChange={(v) => set('gameatlasUrl', v)} placeholder="http://192.168.1.4:3000（你的 GameAtlas 地址）" />
             </div>
             <div className="settings-field">
               <span className="settings-label">
-                GameAtlas Key {keyTag(settings?.library.gameatlasApiKeyConfigured)}
+                GameAtlas 管理员密码 {keyTag(settings?.library.gameatlasApiKeyConfigured)}
               </span>
-              <Input mode="password" value={form.gameatlasApiKey} onChange={(v) => set('gameatlasApiKey', v)} placeholder="留空不修改" />
+              <Input
+                mode="password"
+                value={form.gameatlasApiKey}
+                onChange={(v) => set('gameatlasApiKey', v)}
+                placeholder={settings?.library.gameatlasApiKeyConfigured ? '已配置，留空不修改' : '它没有 API Key——填管理员密码'}
+              />
             </div>
           </div>
         </Card>
@@ -433,6 +499,7 @@ export default function SettingsView() {
             ))}
           </ul>
         </Card>
+      </div>
       </div>
     </div>
   )

@@ -14,16 +14,22 @@ import (
 // 密钥字段只在提交时出现：空字符串=不修改，clearXxx=true=清空。
 type settingsPayload struct {
 	LLM struct {
-		Endpoint    string   `json:"endpoint"`
-		Model       string   `json:"model"`
-		APIKey      string   `json:"apiKey"`
-		ClearAPIKey bool     `json:"clearApiKey"`
-		Temperature *float64 `json:"temperature"`
-		MaxTokens   *int     `json:"maxTokens"`
+		Endpoint        string   `json:"endpoint"`
+		Model           string   `json:"model"`
+		APIKey          string   `json:"apiKey"`
+		ClearAPIKey     bool     `json:"clearApiKey"`
+		Temperature     *float64 `json:"temperature"`
+		MaxTokens       *int     `json:"maxTokens"`
+		ReasoningEffort string   `json:"reasoningEffort"`
+		Protocol        string   `json:"protocol"`
+		ContextWindow   int      `json:"contextWindow"`
 	} `json:"llm"`
 	Search struct {
 		ExaAPIKey      string `json:"exaApiKey"`
 		ClearExaAPIKey bool   `json:"clearExaApiKey"`
+		// ProxyURL 出外网的 HTTP 代理。nil = 这次没提交这个字段（不动）；
+		// 空串 = 明确清掉——文本输入框最自然的语义就是"清空即删除"。
+		ProxyURL *string `json:"proxyUrl"`
 	} `json:"search"`
 	Library struct {
 		EmbyURL         *string `json:"embyUrl"`
@@ -80,6 +86,15 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	st.LLM.Temperature = p.LLM.Temperature
 	st.LLM.MaxTokens = p.LLM.MaxTokens
+	if p.LLM.ReasoningEffort != "" {
+		st.LLM.ReasoningEffort = p.LLM.ReasoningEffort
+	}
+	if p.LLM.Protocol != "" {
+		st.LLM.Protocol = p.LLM.Protocol
+	}
+	if p.LLM.ContextWindow > 0 {
+		st.LLM.ContextWindow = p.LLM.ContextWindow
+	}
 	if v := nonEmpty(p.Library.EmbyURL); v != nil {
 		st.Library.EmbyURL = v
 	}
@@ -128,6 +143,10 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	} else if p.Search.ExaAPIKey != "" {
 		_ = s.store.SetSecret("exa_api_key", p.Search.ExaAPIKey)
 	}
+	// 出外网的代理：nil = 这次没提交（不动），空串 = 清掉。
+	if p.Search.ProxyURL != nil {
+		st.Search.ProxyURL = strings.TrimSpace(*p.Search.ProxyURL)
+	}
 	if p.Admin.ClearPassword {
 		_ = s.store.SetAdminPassword("")
 	} else if p.Admin.NewPassword != "" {
@@ -171,8 +190,14 @@ func (s *Server) handleTestLLM(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRuntime(w http.ResponseWriter, _ *http.Request) {
 	st, _ := s.store.GetSettings()
 	stats, _ := s.store.RuntimeStats()
+	// 上下文窗口：优先用设置里的值，没设时给个保守默认（面板右下角的用量环用它做分母）
+	ctxWindow := st.LLM.ContextWindow
+	if ctxWindow <= 0 {
+		ctxWindow = 262144
+	}
 	info := map[string]any{
 		"model":             s.runs.ActiveClient().Model(),
+		"contextWindow":     ctxWindow,
 		"maxConcurrentRuns": st.Runs.MaxConcurrentRuns,
 		"activeRuns":        s.runs.ActiveCount(),
 		"queuedRuns":        s.runs.QueuedCount(),
@@ -182,7 +207,7 @@ func (s *Server) handleRuntime(w http.ResponseWriter, _ *http.Request) {
 			"阅读：宇宙树 / 大纲 / 正文（题记·说明块·九章）",
 			"写作：编辑态 Markdown（BlockNote）+ 飞书三态（编辑 / 修订 / 只读）",
 			"Altas：Run + 工具面（站内检索 / 联网核实 / 按章写入）+ 折叠叙事流",
-			"资料夹：系列资料列表，长文可按节写入并关联本系列单作",
+			"资料夹：宇宙 / 系列各自的非标资料列表，长文可按节写入并关联本节点子树内的条目",
 			"批次：一键批量建档（worker 池并发执行）",
 			"版本：每次写入成 revision，可回滚；修订可逐条接受/拒绝",
 		},

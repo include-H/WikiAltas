@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 export PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
-export GOCACHE=/tmp/wikiatlas-go-cache
+export GOCACHE=/root/.cache/wikiatlas-go-build
 # 配置一律在设置页（存 SQLite）；这里只认"监听地址"这类进程级选项，便于 Docker 一次性启动
 ADDR="${WIKIATLAS_ADDR:-127.0.0.1:8080}"
 pkill -f wikiatlas-v2 2>/dev/null || true

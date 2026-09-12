@@ -60,7 +60,7 @@ func TestCheckWikiQualityPass(t *testing.T) {
 	b.WriteString(":::epigraph\n世界在雾里，他向北走。\n:::\n\n")
 	for i := 1; i <= 8; i++ {
 		b.WriteString("## " + string(rune('0'+i)) + ". 章节\n\n")
-		body := strings.Repeat("本章讨论具体手法与事实细节，避免空泛。", 30)
+		body := strings.Repeat("本章讨论具体手法与事实细节，避免空泛。", 45)
 		b.WriteString(body + "\n\n")
 	}
 	// 第 9 章：≥5 条实际用过的来源
@@ -72,7 +72,7 @@ func TestCheckWikiQualityPass(t *testing.T) {
 	if !q.OK {
 		t.Fatalf("expected pass, issues=%v charLen=%d", q.Issues, q.CharLen)
 	}
-	if q.CharLen < 3000 {
-		t.Fatalf("charLen = %d", q.CharLen)
+	if q.CharLen < minCharsFloor {
+		t.Fatalf("charLen = %d < floor %d", q.CharLen, minCharsFloor)
 	}
 }

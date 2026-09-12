@@ -91,9 +91,22 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/runs/{id}", s.handleGetRun)
 	m.HandleFunc("GET /api/runs/{id}/events/stream", s.handleRunEventStream)
 
+	// sessions（会话 = 一段连续对话，runs.workspace 即会话 id）
+	m.HandleFunc("GET /api/sessions", s.handleListSessions)
+	m.HandleFunc("POST /api/sessions", s.handleCreateSession)
+	m.HandleFunc("PATCH /api/sessions/{id}", s.handleRenameSession)
+	m.HandleFunc("DELETE /api/sessions/{id}", s.handleDeleteSession)
+
 	// library
 	m.HandleFunc("GET /api/library/sources", s.handleLibrarySources)
 	m.HandleFunc("POST /api/library/sync", s.handleLibrarySync)
+	// 媒体库：GameAtlas（孪生）——建议建档 / 反哺 / 关联已有条目
+	m.HandleFunc("GET /api/library/gameatlas/suggest", s.handleGameAtlasSuggest)
+	m.HandleFunc("POST /api/library/gameatlas/archive", s.handleGameAtlasArchive)
+	m.HandleFunc("POST /api/library/gameatlas/push", s.handleGameAtlasPush)
+	m.HandleFunc("GET /api/library/gameatlas/search", s.handleGameAtlasSearch)
+	m.HandleFunc("POST /api/library/gameatlas/link", s.handleGameAtlasLink)
+	m.HandleFunc("DELETE /api/library/gameatlas/link", s.handleGameAtlasUnlink)
 
 	// search
 	m.HandleFunc("GET /api/search", s.handleSearch)

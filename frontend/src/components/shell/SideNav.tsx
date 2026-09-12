@@ -4,16 +4,13 @@ import { Button, Tooltip } from '@douyinfe/semi-ui'
 import {
   IconAppCenter,
   IconHome,
-  IconMoon,
   IconPlus,
   IconSearch,
   IconSetting,
   IconSidebar,
   IconStar,
-  IconSun,
 } from '@douyinfe/semi-icons'
 import { useAppStore } from '../../lib/store'
-import { toggleTheme } from '../../lib/theme'
 import { workPath } from '../../lib/routes'
 import SearchModal from './SearchModal'
 import WorkTree from './WorkTree'
@@ -28,12 +25,9 @@ export default function SideNav() {
     useAppStore()
   const [searchOpen, setSearchOpen] = useState(false)
   const [createRoot, setCreateRoot] = useState<CreateTarget | null>(null)
-  const [theme, setTheme] = useState(
-    document.body.getAttribute('theme-mode') === 'dark' ? 'dark' : 'light',
-  )
 
   const pinned = nodes.filter((n) => pinnedIds.includes(n.id))
-  // 资料夹模式：路由在 /w/:id/folder(/:docId) 时，左栏从宇宙树切成该系列的资料列表
+  // 资料夹模式：路由在 /w/:id/folder(/:docId) 时，左栏从宇宙树切成该节点的资料列表
   const folderWorkId = /^\/w\/([^/]+)\/folder/.exec(loc.pathname)?.[1] ?? null
   const folderMode =
     !!folderWorkId && folderWorkId !== '-' && nodes.some((n) => n.id === folderWorkId)
@@ -89,14 +83,6 @@ export default function SideNav() {
         </Tooltip>
         )}
         <div className="side-spacer" />
-        <Tooltip content={theme === 'dark' ? '浅色模式' : '深色模式'} position="right">
-          <Button
-            theme="borderless"
-            type="tertiary"
-            icon={theme === 'dark' ? <IconSun /> : <IconMoon />}
-            onClick={() => setTheme(toggleTheme())}
-          />
-        </Tooltip>
         {me.authed && (
         <Tooltip content="设置" position="right">
           <Button
@@ -167,7 +153,7 @@ export default function SideNav() {
             theme="borderless"
             type="tertiary"
             icon={<IconStar size="small" />}
-            onClick={() => nav(workPath(n.id, n.slug))}
+            onClick={() => nav(workPath(n.id))}
           >
             {n.title}
           </Button>

@@ -16,8 +16,11 @@ frontend/dist/
 # 构建缓存
 frontend/node_modules/.vite/
 *.tsbuildinfo
+__pycache__/
 
 # 本地参考：用户 checkout 的 deepseek-harness（295MB，只是拿来对照 harness 设计）
 /deepseek-harness/
+# 本地参考：OpenAI Codex 官方仓库（717MB，对照 CLI/TUI 的流式与任务展示）
+/codex/
 # 随手丢在仓库根目录的参考截图 / 临时图片
 /*.png

@@ -362,7 +362,8 @@ func TestTreeWithChildren(t *testing.T) {
 
 func TestDocsAndRelationsAPI(t *testing.T) {
 	ts, _ := newTestServer(t)
-	a := doJSON(t, "POST", ts.URL+"/api/works", map[string]any{"kind": "work", "title": "A"}, 201)
+	// 资料夹挂在容器节点上（宇宙 / 系列），所以这里用 series 而不是 work
+	a := doJSON(t, "POST", ts.URL+"/api/works", map[string]any{"kind": "series", "title": "A"}, 201)
 	b := doJSON(t, "POST", ts.URL+"/api/works", map[string]any{"kind": "work", "title": "B"}, 201)
 	aid := a["id"].(string)
 	bid := b["id"].(string)

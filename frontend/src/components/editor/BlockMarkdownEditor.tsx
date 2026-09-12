@@ -11,7 +11,12 @@ import {
 import { BlockNoteView } from '@blocknote/mantine'
 import '@blocknote/core/fonts/inter.css'
 import '@blocknote/mantine/style.css'
-import { blocksToStoredMd, mdToBlockNoteMd, placeholderToEpigraphBlocks } from '../../lib/blockMd'
+import {
+  EPIGRAPH_TYPE,
+  blocksToStoredMd,
+  mdToBlockNoteMd,
+  placeholderToEpigraphBlocks,
+} from '../../lib/blockMd'
 import { slugifyHeading, uniqueSlug } from '../../lib/mdOutline'
 import FeishuToolbar from './FeishuToolbar'
 import { epigraphBlockSpec } from './EpigraphBlock'
@@ -42,6 +47,132 @@ const schema = BlockNoteSchema.create({
 const dictionary = {
   ...zh,
   placeholders: { ...zh.placeholders, default: '' },
+}
+
+/** vscode-editor-data 是 VS Code 系编辑器复制时写的 JSON，带被复制文件的语言。 */
+function copiedFromMarkdownEditor(data: DataTransfer): boolean {
+  const raw = data.getData('vscode-editor-data')
+  if (!raw) return false
+  try {
+    const mode = (JSON.parse(raw) as { mode?: unknown }).mode
+    return typeof mode === 'string' && /^(markdown|md)$/i.test(mode)
+  } catch {
+    return false
+  }
+}
+
+const EPIGRAPH_FENCE = ':::epigraph'
+const FENCE_CLOSE = ':::'
+
+interface FenceBlock {
+  id: string
+  type: string
+  content?: unknown
+}
+
+/**
+ * 段落块的文本按行拆开。BlockNote 把硬换行存成文本里的 "\n"（nodeToBlock.ts），
+ * 所以粘贴一整段围栏时，四行会落在同一个段落里，这里按行还原。
+ * 非段落返回 null（正文里混进列表/代码块时据此放弃，不硬折）。
+ */
+function paragraphLines(block: FenceBlock): string[] | null {
+  if (block.type !== 'paragraph') return null
+  const content = block.content
+  if (typeof content === 'string') return content.split('\n')
+  if (!Array.isArray(content)) return []
+  return content
+    .map((item) => {
+      const t = (item as { text?: unknown })?.text
+      return typeof t === 'string' ? t : ''
+    })
+    .join('')
+    .split('\n')
+}
+
+interface FenceEditor {
+  document: FenceBlock[]
+  // 用方法简写：这几处只需要结构对得上，参数用宽类型即可（属性写法会按逆变报错）
+  replaceBlocks(ids: string[], blocks: unknown): void
+  setTextCursorPosition(id: string, placement?: 'start' | 'end'): void
+  insertBlocks(
+    blocks: unknown[],
+    referenceBlock: string,
+    placement?: 'before' | 'after',
+  ): { id: string }[]
+}
+
+/** 有没有以 `:::epigraph` 起头的段落（每次输入都判一次，尽量便宜）。 */
+function hasEpigraphFence(editor: FenceEditor): boolean {
+  return editor.document.some((b) => paragraphLines(b)?.[0]?.trim() === EPIGRAPH_FENCE)
+}
+
+/**
+ * 把编辑器里手打/粘进来的 `:::epigraph … :::` 折成题记块。
+ *
+ * 载入路径（mdToBlockNoteMd + placeholderToEpigraphBlocks）只在打开文档时跑一次，
+ * 打字走的是反向序列化，到不了那里——所以在编辑器里补这一遍扫描。
+ * 闭合行还没写出来就不动（等下次 change）；中途遇到非段落块就放弃，不硬折。
+ */
+function foldEpigraphFences(editor: FenceEditor): boolean {
+  const blocks = editor.document
+  for (let i = 0; i < blocks.length; i += 1) {
+    const head = paragraphLines(blocks[i])
+    if (!head || head[0]?.trim() !== EPIGRAPH_FENCE) continue
+
+    const body: string[] = []
+    let tail: string[] = []
+    let endBlock = -1
+    let pending = head.slice(1)
+    for (let j = i; j < blocks.length; j += 1) {
+      if (j > i) {
+        const next = paragraphLines(blocks[j])
+        // 又开了一个围栏，或混进别的块：交给用户自己收拾
+        if (next === null || next[0]?.trim() === EPIGRAPH_FENCE) break
+        pending = next
+      }
+      const close = pending.findIndex((l) => l.trim() === FENCE_CLOSE)
+      if (close === -1) {
+        body.push(...pending)
+        continue
+      }
+      body.push(...pending.slice(0, close))
+      tail = pending.slice(close + 1)
+      endBlock = j
+      break
+    }
+    if (endBlock === -1) continue
+
+    const replacement: unknown[] = [
+      { type: EPIGRAPH_TYPE, props: { text: body.join('\n').trim() } },
+    ]
+    // 闭合行后面还留着字：留在题记下面当新段落，别吞掉
+    if (tail.join('').trim() !== '') {
+      replacement.push({ type: 'paragraph', content: tail.join('\n') })
+    }
+    editor.replaceBlocks(
+      blocks.slice(i, endBlock + 1).map((b) => b.id),
+      replacement,
+    )
+    // 折完整块会停在「节点选中」态，BlockNote 那时会吞掉可打印键（打字没反应）。
+    // 把光标交给后面那块；后面没有就补一个空段落让用户接着写。
+    try {
+      const next = editor.document[i + 1]
+      if (next) {
+        editor.setTextCursorPosition(next.id, 'start')
+      } else {
+        const [created] = editor.insertBlocks(
+          [{ type: 'paragraph' }],
+          editor.document[i].id,
+          'after',
+        )
+        if (created) editor.setTextCursorPosition(created.id, 'start')
+      }
+    } catch {
+      // 光标停哪儿不影响内容，放不下就算了
+    }
+    return true
+  }
+  return false
 }
 
 /**
@@ -88,6 +219,20 @@ export default function BlockMarkdownEditor({
   const editor = useCreateBlockNote({
     dictionary,
     schema,
+    // BlockNote 收到 vscode-editor-data 就直奔 handleVSCodePaste，把整段原样包成
+    // 一个代码块（跳过它自己的 markdown 判断）。从编辑器里复制 markdown 源码
+    // 落进 Wiki 时，那一大坨灰容器就是这么来的——这里按 markdown 解析回块。
+    // 光标本来就在代码块里时不拦：那时用户要的就是代码本身。
+    pasteHandler: ({ event, editor: ed, defaultPasteHandler }) => {
+      const data = event.clipboardData
+      const text = data?.getData('text/plain') ?? ''
+      const inCodeBlock = ed.prosemirrorState.selection.$from.parent.type.spec.code
+      if (!inCodeBlock && text.trim() && data && copiedFromMarkdownEditor(data)) {
+        ed.pasteMarkdown(text)
+        return true
+      }
+      return defaultPasteHandler()
+    },
   })
 
   // Sync with app theme (Semi body[theme-mode])
@@ -125,6 +270,9 @@ export default function BlockMarkdownEditor({
     return () => window.clearTimeout(t)
   }, [editor, value, readOnly])
 
+  /** 待执行的题记围栏折叠（延后到本次 change 落定，避免在 dispatch 里再 dispatch）。 */
+  const fenceSweep = useRef<number | null>(null)
+
   useEditorChange((e) => {
     if (suppressChange.current) return
     const md = blocksToStoredMd(e.document, (run) =>
@@ -134,7 +282,22 @@ export default function BlockMarkdownEditor({
     lastLoaded.current = md
     syncHeadingIds(wrapRef.current)
     onChange?.(md)
+    // 手打/粘进来的 `:::epigraph … :::` 折成题记块；折叠本身会再触发一次 change，
+    // 那一次没有围栏可折，所以不会来回打架。
+    if (fenceSweep.current === null && hasEpigraphFence(e)) {
+      fenceSweep.current = window.setTimeout(() => {
+        fenceSweep.current = null
+        if (!suppressChange.current) foldEpigraphFences(e)
+      }, 0)
+    }
   }, editor)
+
+  useEffect(
+    () => () => {
+      if (fenceSweep.current !== null) window.clearTimeout(fenceSweep.current)
+    },
+    [],
+  )
 
   useEffect(() => {
     editor.isEditable = !readOnly

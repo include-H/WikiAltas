@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"strings"
 
 	"wikiatlas/backend/internal/domain"
 )
@@ -19,10 +20,9 @@ func (s *Store) GetSettings() (*domain.Settings, error) {
 		return nil, err
 	}
 	if raw.Valid && raw.String != "" {
-		// overlay stored JSON onto defaults (partial merge)
-		var stored domain.Settings
-		if err := json.Unmarshal([]byte(raw.String), &stored); err == nil {
-			mergeSettings(&cfg, &stored)
+		// 存下来的 JSON 覆盖到默认值上（递归合并）
+		if err := mergeSettings(&cfg, raw.String); err != nil {
+			return nil, err
 		}
 	}
 	// API key presence from env is not reflected here; handler may override.
@@ -40,49 +40,52 @@ func (s *Store) SaveSettings(st *domain.Settings) error {
 	return err
 }
 
-func mergeSettings(dst, src *domain.Settings) {
-	if src.LLM.Endpoint != "" {
-		dst.LLM.Endpoint = src.LLM.Endpoint
+// mergeSettings 把存下来的 JSON 覆盖到默认值上（递归按 key 合并）。
+//
+// 通用实现，不是逐字段手写——手写的那个版本已经漏过三个字段：
+// ContextWindow（设置页填了窗口，刷新又变回默认）和整个 Admin 段
+// （管理员标识改了名、刷新又变回 admin；新节点可见性同理）。
+// 漏字段这种 bug 不该靠人记得，所以这里改成结构无关的合并，
+// 再加一个"每个字段都存得回来"的round-trip 测试兜底。
+//
+// 语义：**key 缺席 = 用默认值；key 存在（哪怕是零值）= 用户的值**。
+// 带 omitempty 的零值字段本来就不会落盘，所以不会出现"零值盖掉默认"的意外。
+func mergeSettings(dst *domain.Settings, storedJSON string) error {
+	if strings.TrimSpace(storedJSON) == "" {
+		return nil
 	}
-	if src.LLM.Model != "" {
-		dst.LLM.Model = src.LLM.Model
+	base, err := json.Marshal(dst)
+	if err != nil {
+		return err
 	}
-	dst.LLM.APIKeyConfigured = src.LLM.APIKeyConfigured
-	if src.LLM.Temperature != nil {
-		dst.LLM.Temperature = src.LLM.Temperature
+	var baseMap, storedMap map[string]any
+	if err := json.Unmarshal(base, &baseMap); err != nil {
+		return err
 	}
-	if src.LLM.MaxTokens != nil {
-		dst.LLM.MaxTokens = src.LLM.MaxTokens
+	if err := json.Unmarshal([]byte(storedJSON), &storedMap); err != nil {
+		return err
 	}
-	if src.Library.EmbyURL != nil {
-		dst.Library.EmbyURL = src.Library.EmbyURL
+	mergeMap(baseMap, storedMap)
+	merged, err := json.Marshal(baseMap)
+	if err != nil {
+		return err
 	}
-	if src.Library.EmbyAPIKey != nil {
-		dst.Library.EmbyAPIKey = src.Library.EmbyAPIKey
-	}
-	if src.Library.KomgaURL != nil {
-		dst.Library.KomgaURL = src.Library.KomgaURL
-	}
-	if src.Library.KomgaAPIKey != nil {
-		dst.Library.KomgaAPIKey = src.Library.KomgaAPIKey
-	}
-	if src.Library.GameAtlasURL != nil {
-		dst.Library.GameAtlasURL = src.Library.GameAtlasURL
-	}
-	if src.Library.GameAtlasAPIKey != nil {
-		dst.Library.GameAtlasAPIKey = src.Library.GameAtlasAPIKey
-	}
-	if src.Runs.ExpireDays > 0 {
-		dst.Runs.ExpireDays = src.Runs.ExpireDays
-	}
-	if src.Runs.KeepEventsDays > 0 {
-		dst.Runs.KeepEventsDays = src.Runs.KeepEventsDays
-	}
-	if src.Runs.MaxConcurrentRuns > 0 {
-		dst.Runs.MaxConcurrentRuns = src.Runs.MaxConcurrentRuns
-	}
-	if src.SkillRoot != "" {
-		dst.SkillRoot = src.SkillRoot
+	return json.Unmarshal(merged, dst)
+}
+
+// mergeMap 把 src 的键值递归并进 dst；src 里显式为 null 的键不动 dst。
+func mergeMap(dst, src map[string]any) {
+	for k, v := range src {
+		if v == nil {
+			continue
+		}
+		if sv, ok := v.(map[string]any); ok {
+			if dv, ok := dst[k].(map[string]any); ok {
+				mergeMap(dv, sv)
+				continue
+			}
+		}
+		dst[k] = v
 	}
 }
 

@@ -3,7 +3,6 @@ package run
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -16,13 +15,11 @@ import (
 	"wikiatlas/backend/internal/llm"
 	"wikiatlas/backend/internal/skill"
 	"wikiatlas/backend/internal/store"
-	"wikiatlas/backend/internal/tools"
 )
 
 // Manager owns run execution and in-memory SSE subscribers.
 type Manager struct {
 	store     *store.Store
-	registry  *tools.Registry
 	client    llm.Client
 	skillRoot string
 
@@ -45,14 +42,21 @@ type Manager struct {
 func NewManager(st *store.Store, client llm.Client) *Manager {
 	if client == nil {
 		if cfg, ok := llm.ConfigFromEnv(); ok {
-			client = llm.NewOpenAIClient(cfg)
+			c, err := llm.NewClient(cfg)
+			if err != nil {
+				// 环境变量里配了个不认识的协议：不要退回 echo（那会静默跑 mock），
+				// 直接把错误带上——真正的报错点在这条工单第一次调用模型的时候。
+				log.Printf("llm env config: %v", err)
+				client = llm.ErrorClient{Err: err}
+			} else {
+				client = c
+			}
 		} else {
 			client = llm.EchoClient{}
 		}
 	}
 	return &Manager{
 		store:                st,
-		registry:             tools.DefaultRegistry(),
 		client:               client,
 		subscribers:          map[string]map[chan domain.RunEvent]struct{}{},
 		cancelers:            map[string]context.CancelFunc{},
@@ -108,11 +112,15 @@ func (m *Manager) skillLoader() *skill.Loader {
 
 // activeClient prefers an explicitly injected non-echo client, then env, then store key.
 func (m *Manager) activeClient() llm.Client {
-	// explicit non-echo injection wins (tests)
+	return m.activeClientFor("")
+}
+
+// activeClientFor 同上，但允许本条工单覆盖思考等级（聊天框里选的档位）。
+func (m *Manager) activeClientFor(effort string) llm.Client {
+	// 测试注入的自定义客户端优先。构造时按环境变量造出来的那个不算"注入"——
+	// 设置页（SQLite）里的配置才是用户的当前意图，要能覆盖它。
 	if m.client != nil && !llm.IsEcho(m.client) {
-		// still allow env to override only when injected is default OpenAI from env at construct
-		// If tests inject a custom client, keep it.
-		if _, isOA := m.client.(*llm.OpenAIClient); !isOA {
+		if _, fromEnv := m.client.(*llm.ResponsesClient); !fromEnv {
 			return m.client
 		}
 	}
@@ -120,12 +128,21 @@ func (m *Manager) activeClient() llm.Client {
 	if key := m.store.GetAPIKey(); key != "" {
 		st, err := m.store.GetSettings()
 		if err == nil {
+			e := st.LLM.ReasoningEffort
+			if e == "" {
+				e = "medium" // off/低/中/高/超高/max；默认中
+			}
+			if effort != "" {
+				e = effort // 本条工单的覆盖值优先
+			}
 			cfg := llm.Config{
-				Endpoint:    st.LLM.Endpoint,
-				Model:       st.LLM.Model,
-				APIKey:      key,
-				Temperature: st.LLM.Temperature,
-				MaxTokens:   st.LLM.MaxTokens,
+				Endpoint:        st.LLM.Endpoint,
+				Model:           st.LLM.Model,
+				APIKey:          key,
+				Temperature:     st.LLM.Temperature,
+				MaxTokens:       st.LLM.MaxTokens,
+				ReasoningEffort: e,
+				Protocol:        st.LLM.Protocol,
 			}
 			if cfg.Endpoint == "" {
 				cfg.Endpoint = "https://api.openai.com/v1"
@@ -133,19 +150,39 @@ func (m *Manager) activeClient() llm.Client {
 			if cfg.Model == "" {
 				cfg.Model = "gpt-4o-mini"
 			}
-			return llm.NewOpenAIClient(cfg)
+			return clientOrError(cfg)
 		}
 	}
 	// 没有落库配置时退回环境变量
 	if cfg, ok := llm.ConfigFromEnv(); ok {
-		return llm.NewOpenAIClient(cfg)
+		return clientOrError(cfg)
 	}
 	return m.client
+}
+
+// clientOrError 把"构造失败"变成一个会在调用时报错的客户端。
+//
+// 不在这里返回 nil、也不退回 echo：设置页里协议填错了，这样才会在工单里
+// 明着报出来（"不支持的协议 …"），而不是静默跑起 mock 让人以为一切正常。
+func clientOrError(cfg llm.Config) llm.Client {
+	c, err := llm.NewClient(cfg)
+	if err != nil {
+		return llm.ErrorClient{Err: err}
+	}
+	return c
 }
 
 // exaKey 读设置页里的 Exa key（env 兜底）——改完即对下一个工单生效。
 func (m *Manager) exaKey() string {
 	return m.store.ExaAPIKey()
+}
+
+// proxyURL 是设置页里配的出外网代理，只给 fetch_url 用（直连超时时模型带 useProxy 重试）。
+func (m *Manager) proxyURL() string {
+	if st, err := m.store.GetSettings(); err == nil {
+		return st.Search.ProxyURL
+	}
+	return ""
 }
 
 // ActiveClient 供设置页「测试连接」使用（与工单实际用的是同一套解析逻辑）。
@@ -297,18 +334,18 @@ func (m *Manager) sweep() {
 	}
 }
 
-// CreateAndStart creates a run, persists run.started, and launches the executor.
+// CreateAndStart creates a run and launches the executor.
+//
+// 建单本身**不发事件**：一条 response 由执行器开口（response.created），
+// 排队期间就还没有"响应"可言。以前这里先落一条 run.started，于是前端会看到
+// 一个"已经开始了"的事件、随后才是真正的响应——多出来的那一层只是噪声。
 func (m *Manager) CreateAndStart(body domain.CreateRunBody) (*domain.Run, error) {
-	model := m.client.Model()
+	// 记**解析后**的模型名：m.client 只是冷启动占位（没 env 配置时是 echo），
+	// 真正跑的是 activeClient()——设置页优先。用占位名会让每条工单的 model
+	// 列都写 "echo"，和流里 response.created 报的模型对不上。
+	model := m.activeClient().Model()
 	r, err := m.store.CreateRun(body.Intent, body.Goal, model, body.Workspace)
 	if err != nil {
-		return nil, err
-	}
-	if _, err := m.store.AppendRunEvent(r.ID, "run.started", map[string]any{
-		"runId":  r.ID,
-		"goal":   body.Goal,
-		"intent": string(body.Intent),
-	}); err != nil {
 		return nil, err
 	}
 	ctxMap := map[string]any{}
@@ -338,41 +375,14 @@ func (m *Manager) CreateAndStart(body domain.CreateRunBody) (*domain.Run, error)
 			ctxMap["extra"] = body.Context.Extra
 		}
 	}
-	// 同一段会话里最近的工单：带上结论，用户才能"接着聊"
-	// （否则每条新消息都从零开始，上一单查到啥、改了啥全不知道。）
+	// 会话键进上下文：执行器用它做"会话转录"（把前几单的对话喂回模型）。
 	if body.Workspace != "" {
-		if prev, err := m.store.ListRuns("", body.Workspace, 5); err == nil {
-			briefs := make([]map[string]any, 0, 3)
-			for _, p := range prev {
-				if p.ID == r.ID || p.Status == domain.RunStatusRunning {
-					continue
-				}
-				summary := ""
-				if p.Result != nil {
-					if s, ok := p.Result["summary"].(string); ok {
-						summary = s
-					}
-				}
-				briefs = append(briefs, map[string]any{
-					"intent": string(p.Intent), "goal": p.Goal,
-					"status": string(p.Status), "summary": summary,
-				})
-				if len(briefs) >= 2 {
-					break
-				}
-			}
-			if len(briefs) > 0 {
-				ctxMap["previous"] = briefs
-			}
-		}
+		ctxMap["session"] = body.Workspace
 	}
-	plan := []domain.RunTask{
-		{ID: "t1", Title: "理解目标", Status: "in_progress"},
-		{ID: "t2", Title: "检索资料", Status: "pending"},
-		{ID: "t3", Title: "产出内容", Status: "pending"},
-		{ID: "t4", Title: "写入并完成", Status: "pending"},
+	// 聊天框里选的思考等级：只作用于本条工单（auto = 不指定，走设置页的值）
+	if body.ReasoningEffort != "" && body.ReasoningEffort != "auto" {
+		ctxMap["reasoningEffort"] = body.ReasoningEffort
 	}
-	_ = m.store.UpdateRunPlan(r.ID, plan)
 	_ = m.store.UpdateRunCheckpoint(r.ID, map[string]any{"lastStep": 0, "context": ctxMap}, map[string]any{})
 
 	m.dispatch(r.ID, body.Intent, body.Goal, ctxMap, 0)
@@ -401,7 +411,7 @@ func (m *Manager) Resume(runID string) (*domain.Run, error) {
 		ctxMap = c
 	}
 	_ = m.store.UpdateRunStatus(runID, domain.RunStatusRunning)
-	m.emit(runID, "narrative", map[string]any{"text": "继续执行中断的工单。"})
+	m.noticeRun(runID, "继续执行中断的工单。", NoticeInfo)
 
 	m.dispatch(runID, r.Intent, r.Goal, ctxMap, lastStep)
 	return m.store.GetRun(runID)
@@ -442,7 +452,7 @@ func (m *Manager) Cancel(runID string) error {
 	if err := m.store.InterruptRun(runID); err != nil {
 		return err
 	}
-	m.emit(runID, "narrative", map[string]any{"text": "工单已取消，checkpoint 已保留。"})
+	m.noticeRun(runID, "工单已取消，checkpoint 已保留。", NoticeInfo)
 	return nil
 }
 
@@ -515,19 +525,6 @@ func (m *Manager) execute(runID string, intent domain.RunIntent, goal string, ct
 		return
 	}
 	m.executeLLM(ctx, runID, intent, goal, ctxMap, fromStep)
-}
-
-// ToolCacheGet is a helper for tool_cache use.
-func ToolCacheGet(r *domain.Run, key string) (json.RawMessage, bool) {
-	if r == nil || r.ToolCache == nil {
-		return nil, false
-	}
-	v, ok := r.ToolCache[key]
-	if !ok {
-		return nil, false
-	}
-	b, _ := json.Marshal(v)
-	return b, true
 }
 
 // ensure unused imports stay meaningful in tests/tools wiring

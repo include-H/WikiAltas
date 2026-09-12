@@ -31,29 +31,53 @@ func TestPrintMockEventExample(t *testing.T) {
 	for _, ev := range events {
 		var payload string
 		switch ev.Type {
-		case "narrative":
-			payload = fmt.Sprint(ev.Payload["text"])
-		case "tool.started":
-			payload = fmt.Sprintf("%v %v", ev.Payload["name"], ev.Payload["inputSummary"])
-		case "tool.done":
-			payload = fmt.Sprintf("%v → %v", ev.Payload["name"], ev.Payload["outputSummary"])
-		case "content.staging":
+		case "response.output_item.done":
+			payload = describeItem(ev.Payload["item"])
+		case "response.completed":
+			payload = fmt.Sprint(ev.Payload["response"].(map[string]any)["status"])
+		case "wikiatlas.content.staging":
 			payload = fmt.Sprintf("%v:%v", ev.Payload["targetType"], ev.Payload["targetId"])
-		case "content.committed":
+		case "wikiatlas.content.committed":
 			payload = fmt.Sprintf("%v:%v v%v", ev.Payload["targetType"], ev.Payload["targetId"], ev.Payload["version"])
-		case "plan.updated":
-			payload = "tasks updated"
-		case "run.completed":
-			payload = fmt.Sprint(ev.Payload["summary"])
-		case "tree.updated":
+		case "wikiatlas.tree":
 			payload = "status refresh"
-		case "run.started":
-			payload = fmt.Sprint(ev.Payload["goal"])
+		case "wikiatlas.notice":
+			payload = fmt.Sprint(ev.Payload["text"])
+		case "wikiatlas.todo":
+			payload = fmt.Sprintf("%v 条任务", len(ev.Payload["tasks"].([]any)))
+		case "wikiatlas.usage":
+			payload = fmt.Sprintf("prompt=%v cacheRead=%v", ev.Payload["promptTokens"], ev.Payload["cacheReadTokens"])
+		}
+		// 只有 Responses 流事件带号；旁路事件打印 "-"
+		seq := "-"
+		if v, ok := ev.Payload["sequence_number"].(float64); ok {
+			seq = fmt.Sprintf("%d", int(v))
 		}
 		if payload != "" {
-			fmt.Printf("[%s] %s\n", ev.Type, payload)
+			fmt.Printf("[%3s %s] %s\n", seq, ev.Type, payload)
 		} else {
-			fmt.Printf("[%s]\n", ev.Type)
+			fmt.Printf("[%3s %s]\n", seq, ev.Type)
 		}
 	}
+}
+
+// describeItem 把一条输出项压成一行（这是演示打印，不是断言）。
+func describeItem(raw any) string {
+	it, ok := raw.(map[string]any)
+	if !ok {
+		return ""
+	}
+	switch it["type"] {
+	case "message":
+		parts, _ := it["content"].([]map[string]any)
+		if len(parts) > 0 {
+			return fmt.Sprint(parts[0]["text"])
+		}
+	case "reasoning":
+		return "（思考）"
+	case "function_call":
+		extra, _ := it["wikiatlas"].(map[string]any)
+		return fmt.Sprintf("%v → %v", it["name"], extra["outputSummary"])
+	}
+	return ""
 }

@@ -1,35 +1,22 @@
 /**
  * UUID-first path builders.
  *
- * Identity is always the UUID (`:id` / `:docId`). The slug segment is
- * cosmetic only (GitHub/Notion style) and must never be used for lookup.
+ * 身份永远是 UUID（`:id` / `:docId`）。**路径里不写 slug**——UUID 本身就是那篇文章：
+ * 再挂一段标题，同一条内容就有了多个 URL，还得处理转义、保留字（`folder`）、
+ * 改名后的陈旧链接、以及"该跳回规范链接"的重定向。这些成本全是 slug 带来的，
+ * 而它一点信息量都不增加。
  *
  * Path table:
  *   /w/:id                      work
- *   /w/:id/:slug                work (cosmetic slug; ignored on resolve)
  *   /w/:id/folder               docs folder
  *   /w/:id/folder/:docId        doc by UUID
+ *
+ * （App 里仍保留一条 `/w/:id/:slug` 的容忍路由：不生成、但旧链接点进来照样能开。）
  */
 
-/** Path tokens that must never be treated as a cosmetic slug. */
-const RESERVED = new Set(['folder'])
-
-/**
- * Encode a display slug for use as a path segment.
- * Returns null when the slug is empty or reserved — callers then omit it.
- */
-export function encodeSlugPath(slug?: string | null): string | null {
-  if (!slug) return null
-  if (RESERVED.has(slug)) return null
-  // Reject values that would break path structure even after encode
-  if (slug === '.' || slug === '..') return null
-  return encodeURIComponent(slug)
-}
-
-/** `/w/:id` or `/w/:id/:slug` when a safe cosmetic slug is available. */
-export function workPath(id: string, slug?: string | null): string {
-  const s = encodeSlugPath(slug)
-  return s ? `/w/${id}/${s}` : `/w/${id}`
+/** `/w/:id` */
+export function workPath(id: string): string {
+  return `/w/${id}`
 }
 
 /** `/w/:id/folder` — identity is the work UUID. */

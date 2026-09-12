@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -53,15 +54,36 @@ func TestIsEcho(t *testing.T) {
 	if !IsEcho(EchoClient{}) {
 		t.Fatal("EchoClient should be echo")
 	}
-	c := NewOpenAIClient(Config{APIKey: "x", Model: "m", Endpoint: "http://x"})
+	c, err := NewClient(Config{APIKey: "x", Model: "m", Endpoint: "http://x"})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
 	if IsEcho(c) {
-		t.Fatal("OpenAI client should not be echo")
+		t.Fatal("Responses client should not be echo")
+	}
+}
+
+// 协议分派：空 = 默认 responses；认不出的协议要明确报错，不静默退回默认。
+func TestNewClientProtocolDispatch(t *testing.T) {
+	for _, p := range []string{"", "responses", "Responses"} {
+		c, err := NewClient(Config{APIKey: "x", Model: "m", Protocol: p})
+		if err != nil {
+			t.Fatalf("protocol %q should be accepted: %v", p, err)
+		}
+		if _, ok := c.(*ResponsesClient); !ok {
+			t.Fatalf("protocol %q built %T", p, c)
+		}
+	}
+	if _, err := NewClient(Config{APIKey: "x", Protocol: "chat"}); err == nil {
+		t.Fatal("不认识的协议必须报错，不能静默退回默认")
+	} else if !strings.Contains(err.Error(), "chat") {
+		t.Fatalf("错误里应带上那个不认识的协议：%v", err)
 	}
 }
 
 func TestNewFunctionToolSchema(t *testing.T) {
 	def := NewFunctionTool("narrative", "desc", ObjectSchema(map[string]any{
-		"text": StrProp("line"),
+		"text": map[string]any{"type": "string", "description": "line"},
 	}, []string{"text"}))
 	if def.Type != "function" || def.Function.Name != "narrative" {
 		t.Fatalf("def=%+v", def)

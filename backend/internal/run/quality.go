@@ -19,12 +19,17 @@ var (
 	linkRe = regexp.MustCompile(`(?m)^\s*(?:[-*+]|\d+\.)\s+\S`)
 )
 
+// minCharsFloor 对齐 skill core.md §3「全篇默认 5,000–11,000 字」的下限。
+// 低于它是低质信号；材料不足时 skill 允许写短并在说明行交代，所以这里只打标、不拒稿。
+const minCharsFloor = 5000
+
 // CheckWikiQuality validates a create_wiki draft before commit.
 //
-// Rules (DESIGN §4.6 + task):
-//   - must have ## sections
-//   - prefer length > 3000 chars (warn, not hard-fail alone)
-//   - no empty chapter stubs (## heading with almost no body)
+// 检查项镜像 skill 的硬要求，不另立一套标准（数字与出处见括注）：
+//   - ## 章节存在（core.md §2.1）
+//   - 一级章 1–9 齐全、参考资料 ≥5（core.md §2.5）
+//   - 有且只有一块 :::epigraph（core.md §4）
+//   - 篇幅达到 skill 默认区间下限（core.md §3：5,000–11,000 字）
 //
 // A failing draft is still committed, but summary is marked low-quality
 // and status stays draft rather than ready.
@@ -65,8 +70,8 @@ func CheckWikiQuality(md string) QualityResult {
 		}
 	}
 
-	if r.CharLen < 3000 {
-		r.Issues = append(r.Issues, "篇幅不足 3000 字（当前 "+itoa(r.CharLen)+"）")
+	if r.CharLen < minCharsFloor {
+		r.Issues = append(r.Issues, "篇幅不足 skill 下限 "+itoa(minCharsFloor)+" 字（core.md §3，当前 "+itoa(r.CharLen)+"）")
 	}
 
 	// 题记：有且只有一块 :::epigraph（core.md §4）
@@ -102,14 +107,6 @@ func CheckWikiQuality(md string) QualityResult {
 	// drafts are marked low-quality — that matches "mark summary low quality".
 	r.OK = len(r.Issues) == 0
 	return r
-}
-
-// QualitySummaryTag returns a summary suffix when quality fails.
-func QualitySummaryTag(q QualityResult) string {
-	if q.OK {
-		return ""
-	}
-	return "（low quality: " + strings.Join(q.Issues, "；") + "）"
 }
 
 func itoa(n int) string {

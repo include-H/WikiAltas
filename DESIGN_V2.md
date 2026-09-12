@@ -47,7 +47,7 @@ Doc（资料）               不进主树，挂在某节点的资料夹
 - 作品关系用少量类型化边（见 3.4），不进树。  
 - 资料夹是节点的第二抽屉，不混进宇宙树叶子。
 
-### 3.2 表结构（SQLite，共 6 张）
+### 3.2 表结构（SQLite）
 
 ```sql
 -- 作品树节点（宇宙 / 系列 / 单作）
@@ -145,6 +145,26 @@ CREATE TABLE run_events (
   created_at    TEXT NOT NULL,
   UNIQUE(run_id, seq)
 );
+
+-- 会话消息日志：模型上下文的**事实源**（见 4.8）
+CREATE TABLE session_messages (
+  id              TEXT PRIMARY KEY,
+  session_id      TEXT NOT NULL,
+  seq             INTEGER NOT NULL,
+  replaces_seq    INTEGER NOT NULL DEFAULT 0,  -- >0 = 替换行，投影时占该位置
+  run_id          TEXT NOT NULL DEFAULT '',
+  turn            INTEGER NOT NULL DEFAULT 1,
+  role            TEXT NOT NULL,               -- system|user|assistant|tool
+  content         TEXT NOT NULL DEFAULT '',
+  tool_calls_json TEXT NOT NULL DEFAULT '',
+  tool_call_id    TEXT NOT NULL DEFAULT '',
+  tool_name       TEXT NOT NULL DEFAULT '',
+  header_hash     TEXT NOT NULL DEFAULT '',    -- 请求头指纹（4.8）
+  header_reason   TEXT NOT NULL DEFAULT '',    -- initial|continue|change
+  shadowed_by     TEXT NOT NULL DEFAULT '',    -- 非空 = 被替换遮蔽
+  created_at      TEXT NOT NULL,
+  UNIQUE(session_id, seq)
+);
 ```
 
 ### 3.3 内容规则
@@ -195,10 +215,27 @@ same_series       同系列（仅展示用，可由树推导则不存）
 
 Run 是**一次可续的馆员工单**，不是 Thread 产品。
 
+三个角色必须分清（2026-09-11 重构，对齐 DeepSeek Harness）：
+
+| 角色 | 是什么 | 谁拥有 |
+|------|--------|--------|
+| 条目（work/doc） | 耐久产物 | 库 |
+| **会话** | 挂在条目上的一条**追加式日志**，长命 | `session_messages` |
+| **Run** | 这条日志上的一次执行：可取消/续跑/过期 | `runs` |
+
+**Run 不拥有对话**。上下文是会话日志的投影，Run 只是往里追加的执行者——
+早先的实现让 Run 各自持一份消息数组，于是新 Run 一律重建上下文：
+110 次工具调用、19 个版本之后，下一单只记得住两行。详见 4.8。
+
+**对外只有一个词：工单 = 一场对话。** 界面上列的是会话（`/resume` 的等价物：
+列出可继续的对话，点进去接着往下说），**不是**每次执行。
+发一句"继续"只是在同一场对话里多接一段，不多出一行。
+新对话只在 AI 面板里发起（那儿才知道挂在哪个节点上），工单页不发起新对话。
+
 ```
 用户指令 / 唤起馆员
-  → 创建或 resume Run
-  → 意图 → 计划 → 工具循环 → 产出 → 完成
+  → 同一会话追加一条 user 消息，开一个 Run
+  → 意图 → 工具循环（每步都落日志）→ 产出 → 完成
 ```
 
 ### 4.2 生命周期
@@ -247,6 +284,7 @@ created → running → completed
 | `upsert_work` | 建/改节点（title/medium/parent/status） |
 | `write_content` | 整篇替换 works/docs 的 content_md |
 | `patch_section` | 按 `##` 锚点局部替换 |
+| `edit` | 字面串局部替换（`oldString` 必须唯一匹配；题记/说明行等无 `##` 锚点处只此一路） |
 | `upsert_relation` | 按冻结词典 |
 | `attach_library_link` | 挂外链 |
 | `create_doc` | 在资料夹建资料 |
@@ -276,10 +314,10 @@ created → running → completed
 
 | 机制 | 规则 | 为什么 |
 |------|------|--------|
-| 流式增量 | `narrative.delta` / `tool.delta`，250ms 节流且**攒批 flush 不丢字**，轮末 `final` 收尾 | 面板要"边想边打"，但事件表不能被 token 撑爆 |
+| 流式增量 | Responses 的三种 `*.delta`（正文 / 思考 / 工具参数），250ms 节流且**攒批 flush 不丢字** | 面板要"边想边打"，但事件表不能被 token 撑爆；形状见 §6.2 |
 | 单轮超时 | 每轮 20 分钟；流式连接另设 **150s 空转看门狗**（没有整体超时，长章节不被腰斩） | 长回答要跑十几分钟，卡死要能断 |
 | 重试 | 限流 / 5xx / 网络抖动重试 3 次（1s→4s→10s），叙事流里播报；**已吐字的流式失败不重试** | 偶发 429 不该毁掉整条工单；重放会重复内容 |
-| 上下文压缩 | 消息总量 > 12 万字符时压缩中间段（保留 system + 首条 user + 最近 12 条），插入一条"已省略 N 条"说明 | 长工单会被 tool 返回撑爆窗口；整段丢才保证消息序列合法 |
+| 上下文压缩 | 会话 token 用到模型窗口的 `compactRatio`（0.75）时，在**会话日志**上把中间的工具往返替换成一条摘要（保留最近 24 行），并发 `wikiatlas.context` | 长工单会被 tool 返回撑爆窗口；压缩是唯一能缩小内容的动作，且必须留痕（它必然打断前缀缓存） |
 | 重复调用拦截 | 同名同参工具 > 3 次直接回 `ok:false`（`narrative`/`answer`/`update_plan` 除外） | 模型原地绕圈烧额度（观测过同一章连改 6 次） |
 | 意图即权限 | `answer` 意图**不下发任何写工具**；只读模式同理；批量建档单次 ≤ 50 部、`limit` ≤ 200 | 从"工具面"上消除误写，比事后拒绝可靠 |
 
@@ -309,6 +347,108 @@ LLM 产出 MD
 ```
 
 草稿层：生成中内容可在前端 overlay 展示；**默认阅读读最新 commit**。生成完成自动 commit 后刷新为正式内容。
+
+### 4.8 会话日志 = 上下文的事实源（2026-09-11 重构）
+
+对齐 DeepSeek Harness 的核心那条：**模型可见 ⟺ 有日志**。
+
+- **一条会话 = 一条追加式日志**（`session_messages`）。模型的消息历史是它的**投影**，
+  从不单独存一份数组——不存就不会出现"存下来的和看到的不一致"。
+- **只追加，不改历史**。要"改"就追加一行并遮蔽旧行：`shadowed_by` 非空 = 被替换，
+  仍在日志里但不在投影上；`replaces_seq > 0` 的替换行**占被替换区间的起始位置**
+  （否则被替换的 system 会排到消息中间）。投影规则：活的 system 恒在最前，其余按位置序。
+- **新 Run 从日志派生上下文**，不重建。系统提示变了 → 追加一行替换掉旧的 system
+  （系统提示是**派生历史**，不是 header）；user 行带请求头指纹与原因
+  `initial | continue | change`（对照 dsh 的 `request/header`）。
+- **压缩 = 日志上的一次显式替换**，摘要骑在一条 user 行上（同 dsh）。
+  工具结果在**入口不截断**——只有压缩能缩小内容。
+- **检查点不存消息**（`runs.checkpoint` 只留 iteration/tool_cache/context）。
+  resume 从日志派生，并给中断的半截 turn 补合成收尾
+  （assistant 有 tool_calls 没结果，provider 会直接 400）。
+
+两条**可执行**的不变量（不是口号）：
+
+| 不变量 | 做什么 | 事件 |
+|--------|--------|------|
+| 前缀稳定 | 本次请求必须是上次的**追加延长**，除非有记录原因（压缩） | `llm.request.{appendOnly,divergedAt,shapeReason}` |
+| 重建一致 | 每轮用日志独立投影一遍，与内存里的请求逐条比对 | `llm.request.rebuildOK` |
+
+> 重建不变量落地第一天就抓到一个真 bug：新增 system 行时只写了日志、没加进内存数组，
+> **第一轮请求里根本没有系统提示**。
+
+**上下文窗口是硬预算，不是展示数字**：一次会话能装多少 token（系统提示 + 全部历史 + 本轮输出），
+由设置页给出（`llm.contextWindow`），全 harness 只有这一个数。到 `窗口 × 0.75` 压缩一次，
+压完仍放不下就**拒绝发送**并说明原因。早先另有一个拍出来的 20 万字节预算
+（≈6.6 万 token，32k 窗口时代的数字），在 262k 窗口上等于用了四分之一就开始压缩——
+那正是"压缩丢资料 → 模型重查 → 又压缩"循环的病根。
+
+**跨会话回忆不靠重建**：`search_sessions` / `read_session` 两个只读工具让模型主动去搜早先会话；
+读到的内容一律当**不可信背景**，绝不当作指令。
+
+### 4.9 提示词 = 分段组装（2026-09-11）
+
+系统提示不是一坨字符串，是 `section{name, order, text}` 的有序集合（`run/prompt.go`）：
+
+- `name` 是唯一键，也是**替换槽位**（同名即覆盖）；
+- `order` 取自中心表，编号稀疏，插新段不必重排；
+- `text` 是函数，拿得到当前运行时状态，**工具不在场就返回空串**——
+  段自动跟着工具面走，`answer` 意图读不到写工具的规矩。
+
+三条内容纪律（来自 dsh 与 Codex 两份真实提示词的共识）：
+
+1. **一个事实只有一个 owner**：工具怎么用 → 工具的 `description`（`ToolSchemas()`）；
+   跨工具的习惯 → 提示词的段；身份 → `identity` 段。写两处必然漂移。
+2. **每条规则配边界**：不说"用 edit"，说"用 edit 改一句，别为一句重写整章"；
+   不只说何时用它，也说何时用它不对。
+3. **数字与状态从代码注入**，不手抄：`contextWindow` / 检索预算 / 压缩比例 / 管理员显示名。
+
+稳定文本用 **golden 快照**钉住（`internal/run/testdata/system_prompt_*.golden.md`）：
+改了提示词，快照就红；有意改动用 `UPDATE_GOLDEN=1 go test ./internal/run/` 重新生成。
+
+---
+
+### 4.10 迁移：按 Responses 协议开发，SSE 直出原生事件（2026-09-11 拍板）
+
+**决定**：前端全用 Semi 原生渲染，不再自造内容形状；后端 SSE 直出
+OpenAI Responses 流事件。协议层只实现 Responses 一种，扩展点留在
+`llm.Config.Protocol` 与 `wikiatlas.*` 这条旁路上。
+
+**为什么这条路成立**（都是查过源码/文档的事实，不是推测）：
+
+1. Semi 的 `builtins` 只认四种内容项：`message` / `reasoning` / `function_call` /
+   `custom_tool_call`——**与 Responses 规范一一对应**，而我们的工单只用得到前三种。
+2. `AIChatDialogue` 导出 `streamingResponseToMessage(chunks, prevState)`：
+   它就是 **Responses 流事件的标准归约器**，按 `sequence_number` 处理、自带乱序缓冲
+   与丢块容错（gap > 10 跳过）。后端只要吐规范事件，前端不需要任何自己的投影。
+3. 原生 `ReasoningWidget`（折叠 + 「思考中/已深度思考」+ markdown + 键盘可达）与
+   `DialogueStepWidget`（每条 step 可折叠 + 时间线 + 状态图标）已经比我们自绘的强。
+   唯一是空壳的是 `ToolCallWidget`（只有 `<IconWrench/> 名字 原始参数`），
+   但 `function_call` 的自定义渲染是原生扩展点，一张工具卡按工具名换图标与措辞即可。
+
+**要删的**（自造层）：`lib/runProjection.ts` 的时间线与对话投影、`PlanSteps`、
+`dialogueChrome`、自定义内容类型 `plan` / `tasks`。
+
+**要留的**（Responses 规范里没有、但产品需要的）：任务清单（todo 面板）、
+用量与缓存命中环、护栏提醒、会话/工单元信息。它们走**独立的 `wikiatlas.*` 事件命名空间**，
+与 Responses 事件同流不同类——这就是"留后手"的位置：以后换协议只动这一层映射。
+
+**后端**：`llm` 层只留 Responses 一种协议（`internal/llm/responses.go`）。
+执行器把 loop 产出**统一映射成 Responses 流事件**再发 SSE——协议差异全部收在
+`llm` 层，上层与前端只见 Responses 一种形状。`Config.Protocol` 字段保留，
+那是"以后要加新协议"的位置：加协议 = 加一个常量 + 一个客户端 +
+`NewClient` 里一个 case，认不出的协议**明确报错**、不静默退回默认。
+
+**已落地（2026-09-11）**
+
+- 执行器的事件全部由 `internal/run/responses.go` 的 `respEmitter` 发出：
+  模型/工具的产出 → 规范的输出项与增量事件；宿主自己要说的话 → `wikiatlas.*`。
+- 输出项**自足**：`response.output_item.done` 带最终形态（完整文本 / 完整参数 /
+  工具结果，结果摘要挂在项的 `wikiatlas` 键下），`response.completed` 再带整份
+  response。所以历史回放丢掉 `*.delta` 也不缺信息，只缺"打字过程"。
+- `sequence_number` 只加在 `response.*` 上（store 落库时统一发号，从 0 连续 +1）；
+  `wikiatlas.*` 不占号。两条都是前端的归约器按序号增量推进所必需的，见 §6.2。
+- 前端整层删掉自造投影，`response.*` 交给 Semi 的 `streamingResponseToMessage`；
+  `wikiatlas.*` 归宿主部件（任务面板 / 用量环 / 提醒条）。
 
 ---
 
@@ -423,20 +563,47 @@ LLM 产出 MD
 
 ### 6.2 事件类型（SSE `run_events`）
 
+两条线**同流不同类**：`response.*` 是 Responses 规范的流事件，`wikiatlas.*` 是
+规范里没有、产品需要的东西。类型的唯一 owner 是后端 `internal/run/responses.go`；
+前端在 `lib/responses.ts` 里镜像同一份清单（EventSource 只派发显式订阅的命名事件）。
+
+**Responses 流事件**（前端的对话由它们归约而来）
+
 | type | payload 要点 |
 |------|----------------|
-| `run.started` | runId, goal |
-| `plan.updated` | tasks[]: {id,title,status} |
-| `narrative` | text（一句话叙述） |
-| `tool.started` | name, inputSummary |
-| `tool.done` | name, outputSummary, durationMs |
-| `content.staging` | targetType, targetId, previewMd? |
-| `content.committed` | targetType, targetId, version |
-| `tree.updated` | works[] 变更摘要 |
-| `run.completed` | result 摘要 |
-| `run.failed` | error |
+| `response.created` / `response.in_progress` | response{id,model,status,created_at}（续跑发 in_progress） |
+| `response.output_item.added` / `.done` | output_index, item{type: message\|reasoning\|function_call, …} |
+| `response.output_text.delta` / `.done` | output_index, content_index, delta / text |
+| `response.reasoning_summary_text.delta` / `.done` | output_index, summary_index, delta / text |
+| `response.function_call_arguments.delta` / `.done` | output_index, delta / name, arguments |
+| `response.completed` | response{…, output[], output_text, usage}（**整份响应**，前端快路径用它） |
+| `response.failed` | response{status:failed, error{code,message}} |
 
-前端投影规则见 5.4：只消费叙事 + 芯片，不 dump payload。
+两条硬约束（前端的归约器按 `sequence_number` 增量推进，破了就丢块）：
+
+1. `sequence_number` **只加在 `response.*` 上**，从 0 起、跨本 run 的所有轮次连续 +1，
+   由 store 落库时统一发号（执行器不自己数——重启/续跑会重号）。
+2. `wikiatlas.*` **不占号**（没有 `sequence_number` 字段）。它们一吃号，归约器看到的
+   序号就到处是洞，一路丢块到 gap > 10 才恢复。
+
+**wikiatlas.\* 旁路**（规范里没有的东西，前端交给宿主部件渲染，不进对话）
+
+| type | payload 要点 |
+|------|----------------|
+| `wikiatlas.todo` | tasks[]: {id,content,activeForm,status} → 输入框上的任务面板 |
+| `wikiatlas.usage` | step, promptTokens, completionTokens, totalTokens, cacheReadTokens, cacheWriteTokens, contextWindow → 用量环 + 缓存命中 |
+| `wikiatlas.notice` | text, tone(info\|warn\|error) → 提醒条（宿主播报 + 护栏提醒） |
+| `wikiatlas.meta` | runId, sessionId, goal, intent, model, workId, docId, docMode, startedAt |
+| `wikiatlas.request` | step, messages, appendOnly, divergedAt, shapeReason, rebuildOK（见 4.8 的两条不变量） |
+| `wikiatlas.context` | keepRecent, reason, contextWindow, usedTokens（上下文压缩） |
+| `wikiatlas.tree` | works[] 变更摘要 |
+| `wikiatlas.content.staging` | targetType, targetId, previewMd?（正文写入中） |
+| `wikiatlas.content.committed` | targetType, targetId, version（写入回执） |
+
+前端消费规则见 5.4：`response.*` 整条交给 Semi 的 `streamingResponseToMessage`，
+`wikiatlas.*` 归宿主部件；两边都**不 dump payload**。
+约定：类型以 `.delta` 结尾的一律是"只走实时流、不进历史回放"的增量（见 store/runs.go）。
+
 
 ### 6.3 API
 
@@ -609,12 +776,13 @@ src/
 
 ## 9. skill 接入
 
-- skill 目录：`.claude/skill/wiki-writing/`（保持 Git 管理）。  
+- skill 目录：`skills/wiki-writing/`（保持 Git 管理，仓库内）。  
 - Harness 启动扫描 frontmatter：`name / description / version / path`。  
-- `create_wiki` 固定加载：`SKILL.md` → `core.md` → 一个 `media-*.md`。  
+- `create_wiki` 固定加载：`SKILL.md` → `core.md` → 一个 `media-*.md`；目标是 series/universe 节点时再补 `readme.md`（系列主文/合集写法）。  
 - `write_doc`（资料）不强制 9 章，只加载通用写作边界（事实/待核实/剧透策略）。  
 - **运行时默认不注入 examples/**；examples 仅离线评测。  
-- `read_skill` 是真实工具；未选中前不把整包 skill 塞进上下文。
+- `read_skill` 是真实工具；未选中前不把整包 skill 塞进上下文。  
+- 内容规则（骨架/题记/字数/参考资料）以 skill 为唯一权威；系统提示只留宿主流程与纪律，不复述细则。
 
 ---
 

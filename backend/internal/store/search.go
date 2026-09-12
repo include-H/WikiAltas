@@ -45,7 +45,7 @@ func (s *Store) searchFTS(match, kind string, limit int) ([]domain.SearchHit, er
 	out := make([]domain.SearchHit, 0)
 	if kind == "" || kind == "work" {
 		rows, err := s.DB.Query(`
-			SELECT w.id, w.title, w.slug,
+			SELECT w.id, w.title,
 			       COALESCE(snippet(works_fts, -1, '«', '»', '…', 12), '')
 			FROM works_fts
 			JOIN works w ON w.rowid = works_fts.rowid
@@ -57,7 +57,7 @@ func (s *Store) searchFTS(match, kind string, limit int) ([]domain.SearchHit, er
 		}
 		for rows.Next() {
 			var h domain.SearchHit
-			if err := rows.Scan(&h.ID, &h.Title, &h.Slug, &h.Snippet); err != nil {
+			if err := rows.Scan(&h.ID, &h.Title, &h.Snippet); err != nil {
 				rows.Close()
 				return nil, err
 			}
@@ -72,7 +72,7 @@ func (s *Store) searchFTS(match, kind string, limit int) ([]domain.SearchHit, er
 	}
 	if kind == "" || kind == "doc" {
 		rows, err := s.DB.Query(`
-			SELECT d.id, d.title, d.slug,
+			SELECT d.id, d.title,
 			       COALESCE(snippet(docs_fts, -1, '«', '»', '…', 12), '')
 			FROM docs_fts
 			JOIN docs d ON d.rowid = docs_fts.rowid
@@ -84,7 +84,7 @@ func (s *Store) searchFTS(match, kind string, limit int) ([]domain.SearchHit, er
 		}
 		for rows.Next() {
 			var h domain.SearchHit
-			if err := rows.Scan(&h.ID, &h.Title, &h.Slug, &h.Snippet); err != nil {
+			if err := rows.Scan(&h.ID, &h.Title, &h.Snippet); err != nil {
 				rows.Close()
 				return nil, err
 			}
@@ -108,7 +108,7 @@ func (s *Store) searchLIKE(q, kind string, limit int) ([]domain.SearchHit, error
 	out := make([]domain.SearchHit, 0)
 	if kind == "" || kind == "work" {
 		rows, err := s.DB.Query(`
-			SELECT id, title, slug,
+			SELECT id, title,
 			       CASE WHEN content_md IS NULL THEN '' ELSE substr(content_md, 1, 80) END
 			FROM works
 			WHERE title LIKE ? OR COALESCE(content_md,'') LIKE ?
@@ -118,7 +118,7 @@ func (s *Store) searchLIKE(q, kind string, limit int) ([]domain.SearchHit, error
 		}
 		for rows.Next() {
 			var h domain.SearchHit
-			if err := rows.Scan(&h.ID, &h.Title, &h.Slug, &h.Snippet); err != nil {
+			if err := rows.Scan(&h.ID, &h.Title, &h.Snippet); err != nil {
 				rows.Close()
 				return nil, err
 			}
@@ -129,7 +129,7 @@ func (s *Store) searchLIKE(q, kind string, limit int) ([]domain.SearchHit, error
 	}
 	if kind == "" || kind == "doc" {
 		rows, err := s.DB.Query(`
-			SELECT id, title, slug, substr(content_md, 1, 80)
+			SELECT id, title, substr(content_md, 1, 80)
 			FROM docs
 			WHERE title LIKE ? OR content_md LIKE ?
 			LIMIT ?`, like, like, limit)
@@ -138,7 +138,7 @@ func (s *Store) searchLIKE(q, kind string, limit int) ([]domain.SearchHit, error
 		}
 		for rows.Next() {
 			var h domain.SearchHit
-			if err := rows.Scan(&h.ID, &h.Title, &h.Slug, &h.Snippet); err != nil {
+			if err := rows.Scan(&h.ID, &h.Title, &h.Snippet); err != nil {
 				rows.Close()
 				return nil, err
 			}

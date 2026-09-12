@@ -24,8 +24,8 @@ func TestCreateWorkAndTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateWork universe: %v", err)
 	}
-	if u.Slug == "" || u.ID == "" {
-		t.Fatalf("expected id and slug, got %+v", u)
+	if u.ID == "" {
+		t.Fatalf("expected an id, got %+v", u)
 	}
 	if u.Status != domain.WorkStatusStub {
 		t.Fatalf("new work status = %s, want stub", u.Status)
@@ -283,7 +283,8 @@ func TestSearchFindsAliases(t *testing.T) {
 
 func TestDocCRUDAndContent(t *testing.T) {
 	s := newTestStore(t)
-	w, err := s.CreateWork(domain.CreateWorkBody{Kind: domain.WorkKindWork, Title: "Work"})
+	// 资料挂在容器节点（宇宙 / 系列）上，单作没有自己的资料夹
+	w, err := s.CreateWork(domain.CreateWorkBody{Kind: domain.WorkKindSeries, Title: "Work"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,8 +414,9 @@ func isValidation(err error) bool {
 	return ok
 }
 
-// 系列 = 资料夹：只有挂在系列节点下的资料才允许关联条目。
-func TestDocLinksOnlyAllowedInSeriesFolder(t *testing.T) {
+// 资料夹挂在宇宙 / 系列上：里面的资料只能关联到**该节点子树内**的条目，不能跨出去。
+// 系列可以嵌套系列，子系列的子孙也算在自己的子树里。
+func TestDocLinksStayInsideTheirFolderSubtree(t *testing.T) {
 	s, err := OpenMemory()
 	if err != nil {
 		t.Fatal(err)
@@ -437,50 +439,156 @@ func TestDocLinksOnlyAllowedInSeriesFolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	// 系列资料夹：可以关联
-	seriesDoc, err := s.CreateDoc(series.ID, domain.CreateDocBody{Title: "神话基底解析"})
+	// 嵌套系列：新水晶神话 ▸ 最终幻想15 ▸ 最终幻想15（单作）
+	nested, err := s.CreateWork(domain.CreateWorkBody{
+		Kind: domain.WorkKindSeries, Title: "最终幻想15", ParentID: &series.ID,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	links := []string{work.ID}
-	if _, err := s.PatchDoc(seriesDoc.ID, domain.PatchDocBody{Links: &links}); err != nil {
-		t.Fatalf("系列资料夹的资料应可关联: %v", err)
+	nestedWork, err := s.CreateWork(domain.CreateWorkBody{
+		Kind: domain.WorkKindWork, Title: "最终幻想15", ParentID: &nested.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	// 跨系列关联：不允许（本系列之外的条目不能挂）
-	otherSeries, err := s.CreateWork(domain.CreateWorkBody{
-		Kind: domain.WorkKindSeries, Title: "最终幻想15", ParentID: &universe.ID,
-	})
+	// 另一个宇宙下的节点：任何资料夹都不该关联到它
+	otherUniverse, err := s.CreateWork(domain.CreateWorkBody{Kind: domain.WorkKindUniverse, Title: "猎魔人"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	outsider, err := s.CreateWork(domain.CreateWorkBody{
-		Kind: domain.WorkKindWork, Title: "王者之剑", ParentID: &otherSeries.ID,
+		Kind: domain.WorkKindWork, Title: "白狼崛起", ParentID: &otherUniverse.ID,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	crossLinks := []string{outsider.ID}
-	if _, err := s.PatchDoc(seriesDoc.ID, domain.PatchDocBody{Links: &crossLinks}); !isValidation(err) {
-		t.Fatalf("跨系列关联应被拒绝，err = %v", err)
-	}
 
-	// 作品资料夹：不允许关联
-	workDoc, err := s.CreateDoc(work.ID, domain.CreateDocBody{Title: "关卡笔记"})
+	links := []string{work.ID}
+
+	// 系列资料夹：自己子树内的单作、以及嵌套系列里的单作，都可以关联
+	seriesDoc, err := s.CreateDoc(series.ID, domain.CreateDocBody{Title: "神话基底解析"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.PatchDoc(workDoc.ID, domain.PatchDocBody{Links: &links}); !isValidation(err) {
-		t.Fatalf("作品资料夹的资料不应允许关联，err = %v", err)
+	if _, err := s.PatchDoc(seriesDoc.ID, domain.PatchDocBody{Links: &links}); err != nil {
+		t.Fatalf("系列资料夹应可关联子树内的单作: %v", err)
+	}
+	nestedLinks := []string{nested.ID, nestedWork.ID}
+	if _, err := s.PatchDoc(seriesDoc.ID, domain.PatchDocBody{Links: &nestedLinks}); err != nil {
+		t.Fatalf("系列资料夹应可关联嵌套系列的子孙: %v", err)
 	}
 
-	// 宇宙资料夹：不允许关联
+	// 跨子树关联：不允许
+	crossLinks := []string{outsider.ID}
+	if _, err := s.PatchDoc(seriesDoc.ID, domain.PatchDocBody{Links: &crossLinks}); !isValidation(err) {
+		t.Fatalf("跨子树关联应被拒绝，err = %v", err)
+	}
+
+	// 宇宙资料夹：子树内的单作可以关联，别的宇宙的不行
 	universeDoc, err := s.CreateDoc(universe.ID, domain.CreateDocBody{Title: "IP 年表"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.PatchDoc(universeDoc.ID, domain.PatchDocBody{Links: &links}); !isValidation(err) {
-		t.Fatalf("宇宙资料夹的资料不应允许关联，err = %v", err)
+	if _, err := s.PatchDoc(universeDoc.ID, domain.PatchDocBody{Links: &links}); err != nil {
+		t.Fatalf("宇宙资料夹应可关联子树内的单作: %v", err)
+	}
+	if _, err := s.PatchDoc(universeDoc.ID, domain.PatchDocBody{Links: &crossLinks}); !isValidation(err) {
+		t.Fatalf("宇宙资料夹不该关联到别的宇宙，err = %v", err)
+	}
+}
+
+// 单作资料夹是「谁写了我」的视图：内容 = 祖先资料夹里关联到这篇的资料。
+func TestWorkFolderShowsDocsLinkingToIt(t *testing.T) {
+	s, err := OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	universe, err := s.CreateWork(domain.CreateWorkBody{Kind: domain.WorkKindUniverse, Title: "最终幻想"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	series, err := s.CreateWork(domain.CreateWorkBody{
+		Kind: domain.WorkKindSeries, Title: "新水晶神话", ParentID: &universe.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, err := s.CreateWork(domain.CreateWorkBody{
+		Kind: domain.WorkKindWork, Title: "未来黎明", ParentID: &series.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 两篇资料：一篇关联这篇单作，一篇不关联
+	linked, err := s.CreateDoc(series.ID, domain.CreateDocBody{Title: "迪诺设定考"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	links := []string{work.ID}
+	if _, err := s.PatchDoc(linked.ID, domain.PatchDocBody{Links: &links}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateDoc(series.ID, domain.CreateDocBody{Title: "神话基底解析"}); err != nil {
+		t.Fatal(err)
+	}
+
+	docs, err := s.ListDocsByWork(work.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(docs) != 1 || docs[0].ID != linked.ID {
+		t.Fatalf("单作资料夹应只列出关联到它的资料，got %d 篇", len(docs))
+	}
+
+	// 系列资料夹仍是"挂在我名下的全部资料"
+	seriesDocs, err := s.ListDocsByWork(series.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(seriesDocs) != 2 {
+		t.Fatalf("系列资料夹应列出名下全部资料，got %d 篇", len(seriesDocs))
+	}
+}
+
+// 方向性关系（改编/续作/衍生/重制/扩充）合起来必须是 DAG：
+// A --sequel_to--> B 之后，B --sequel_to--> A 必须被拒——两条都留着的话，
+// 读取侧会看到「A 是 B 的续作」和「B 是 A 的续作」两句互相矛盾的话。
+// 而 same_series 天然是互相的，两边各存一条是正常的，不能一起拒掉。
+func TestRelationCycleRejectedButMutualAllowed(t *testing.T) {
+	s := newTestStore(t)
+	a, err := s.CreateWork(domain.CreateWorkBody{Kind: domain.WorkKindWork, Title: "A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.CreateWork(domain.CreateWorkBody{Kind: domain.WorkKindWork, Title: "B"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateRelation(domain.CreateRelationBody{
+		FromID: b.ID, ToID: a.ID, Type: domain.RelationSequelTo,
+	}); err != nil {
+		t.Fatalf("第一条方向边应通过: %v", err)
+	}
+	// 反向的续作边：成环，必须拒
+	if _, err := s.CreateRelation(domain.CreateRelationBody{
+		FromID: a.ID, ToID: b.ID, Type: domain.RelationSequelTo,
+	}); err == nil {
+		t.Fatal("反向的续作边（成环）应被拒绝")
+	}
+	// 但 same_series 成对出现是正常的
+	if _, err := s.CreateRelation(domain.CreateRelationBody{
+		FromID: a.ID, ToID: b.ID, Type: domain.RelationSameSeries,
+	}); err != nil {
+		t.Fatalf("对称关系不该被环检查拦下: %v", err)
+	}
+	if _, err := s.CreateRelation(domain.CreateRelationBody{
+		FromID: b.ID, ToID: a.ID, Type: domain.RelationSameSeries,
+	}); err != nil {
+		t.Fatalf("对称关系反向也该通过: %v", err)
 	}
 }
